@@ -1,0 +1,85 @@
+FLEX-1500 udev Rule Change Record
+================================
+
+Date: 2026-08-27
+
+File prepared in this project:
+  70-flex1500.rules
+
+System installation location:
+  /etc/udev/rules.d/70-flex1500.rules
+
+Purpose
+-------
+
+Allow the user logged into the local desktop session to open the FLEX-1500 USB
+device through libusb. This access will be needed by the planned flex1500d Linux
+daemon.
+
+Rule added
+----------
+
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2192", ATTR{idProduct}=="1502", TAG+="uaccess"
+
+Scope of the match
+------------------
+
+  SUBSYSTEM=="usb"
+    Restricts the rule to USB devices.
+
+  ENV{DEVTYPE}=="usb_device"
+    Applies the rule to the complete USB device node, not every interface node.
+
+  ATTR{idVendor}=="2192"
+    Restricts the rule to FlexRadio's observed USB vendor ID.
+
+  ATTR{idProduct}=="1502"
+    Restricts the rule to the FLEX-1500's observed USB product ID.
+
+Permission change
+-----------------
+
+  TAG+="uaccess"
+    Requests that systemd/udev grant an access-control-list entry to the user
+    logged into the active local session. It does not make the device globally
+    writable and does not assign broad permissions to all USB devices.
+
+Radio safety
+------------
+
+The rule changes Linux host-side access to the USB device node only. The rule
+does not send USB commands or sample data, change frequency or gain, key PTT,
+enable transmission, reset the radio, upload firmware, or write radio memory.
+
+Installation
+------------
+
+From the project directory:
+
+  sudo install -m 0644 ./70-flex1500.rules /etc/udev/rules.d/70-flex1500.rules
+  sudo udevadm control --reload-rules
+
+After installation and rule reload, unplug and reconnect the FLEX-1500 so udev
+applies the rule to its newly created device node.
+
+Removal / rollback
+------------------
+
+Removal is intentionally left as a manual administrator action:
+
+  sudo rm /etc/udev/rules.d/70-flex1500.rules
+  sudo udevadm control --reload-rules
+
+Unplug and reconnect the radio after removal. Removing this rule only revokes
+the additional host-side access it granted; it does not alter the radio.
+
+Installation verification
+-------------------------
+
+On 2026-08-27, the rule was confirmed present at its system installation path.
+After the USB cable was unplugged and reconnected (without restarting the
+radio), the FLEX-1500 re-enumerated successfully. A read-only `lsusb -v`
+descriptor request then opened the device without the earlier permission
+warning. No command or sample data was written to the radio during
+verification. USB bus and device numbers are intentionally omitted because
+Linux assigns them dynamically.

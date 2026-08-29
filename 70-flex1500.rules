@@ -1,0 +1,3 @@
+# Permit the locally logged-in user to open the FLEX-1500 through libusb.
+# This rule changes host-side device-node permissions only.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2192", ATTR{idProduct}=="1502", TAG+="uaccess"

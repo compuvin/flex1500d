@@ -1,0 +1,296 @@
+flex1500d origin chat
+=====================
+
+Preserved as historical research documenting the idea that began this project.
+
+I'd like to get my FlexRadio Flex-1500 working on Ubuntu Linux. First, is there any software that will support that radio without running Wine or a VM? Secondly, I think the problem is the drivers. Is there a linux driver? If not, can we make one?
+
+Yes — but there’s an important catch.
+
+For the FLEX-1500 specifically, I do not see a currently usable native Linux application that directly supports the radio over USB. Modern projects such as AetherSDR are genuinely native Linux Flex clients, but they target the FLEX-6000/8000/Aurora architecture and speak the SmartSDR network protocol; they do not support the 1500.
+
+The FLEX-1500 is a very different animal. Flex’s service documentation says its USB connection carries both control traffic and streaming baseband data between the computer and the TAS1020B CPU inside the radio. The internal CPU then controls the DDS, switching, CODEC/audio routing, etc. In other words, the Windows computer is effectively part of the SDR.
+
+Is there a Linux driver?
+
+I cannot find an existing native Linux FLEX-1500 USB driver.
+
+Flex's Windows installation uses two components:
+
+a low-level FlexRadio USB Kernel Driver
+a FLEX-1500-specific higher-level device component
+
+Flex explicitly describes those as being responsible for low-latency radio communication.
+
+And this isn't merely an old forgotten Ubuntu package. Someone asked Flex almost exactly our question in 2024: whether the FLEX-1500 USB protocol or driver source had ever been released so it could be used with embedded/Linux systems. They did not uncover an existing released Linux driver/protocol implementation.
+
+There is another useful clue in the PowerSDR source situation. KE9NS has published the modern PowerSDR 2.8 source, including the C# PowerSDR code and DttSP DSP code, but explicitly notes that several required DLLs have no source code in the repository. That's likely where some of the hardware abstraction pain lives.
+
+Can we make one?
+
+Yes. I think this is absolutely feasible.
+
+And I wouldn't start by writing a Linux kernel module.
+
+I'd start with libusb in user space.
+
+Linux already gives us the USB plumbing. What we really need to learn is:
+
+FLEX-1500
+    │
+    │ USB 1.1 Full Speed / 12 Mb/s
+    ▼
+Linux USB stack
+    │
+    ▼
+libusb
+    │
+    ├── Radio control
+    │     frequency
+    │     PTT
+    │     gain
+    │     filter switching
+    │     codec configuration
+    │     etc.
+    │
+    ├── RX I/Q stream
+    │
+    └── TX I/Q stream
+          │
+          ▼
+       DSP application
+
+libusb is mature and fully supported on Linux, and it can talk directly to USB devices from user space.
+
+So what people casually call the "Linux driver" could initially just be something like:
+
+libflex1500.so
+
+flex1500_open()
+flex1500_close()
+
+flex1500_set_frequency()
+flex1500_set_ptt()
+flex1500_set_preamp()
+flex1500_set_sample_rate()
+
+flex1500_read_iq()
+flex1500_write_iq()
+
+flex1500_read_register()
+flex1500_write_register()
+
+Once that exists, the hard Linux-specific part is basically solved.
+
+Then we could plug it into something such as Quisk, GNU Radio, a new Qt application, or—knowing the kinds of projects you tend to gravitate toward—even make the radio a little Linux SDR server and put a web interface on top of it. Quisk is already a native Linux SDR application with receive/transmit DSP, CAT/Hamlib integration, and external control interfaces, so it might make a particularly good first host once we can supply I/Q.
+
+The really interesting part: reverse engineering the USB protocol
+
+I think this is where we should start rather than attempting a kernel driver blindly.
+
+We have something enormously useful:
+
+PowerSDR already works perfectly with the radio.
+
+That means we have an oracle showing us exactly what USB traffic is supposed to look like.
+
+A very practical development path would be:
+
+Plug the FLEX-1500 into a Windows machine running PowerSDR.
+Capture the USB traffic using USBPcap + Wireshark.
+Perform one operation at a time:
+start radio
+change frequency
+change band
+change mode
+move RX gain
+press PTT
+transmit audio
+Compare the captures.
+Identify USB interfaces, endpoints, transfer types and command structures.
+Reproduce the simplest commands using libusb on Ubuntu.
+Figure out the continuous RX/TX I/Q packet format.
+Build libflex1500.
+
+The very first breakthrough I'd want is ridiculously simple:
+
+Ubuntu
+  ↓
+libusb
+  ↓
+FLEX-1500
+  ↓
+change frequency from 7.100 to 7.200 MHz
+
+If we can do that, we've proven that Linux can control the radio without Flex's Windows driver.
+
+Then I'd go after RX.
+
+And we already know quite a bit about the hardware
+
+The radio uses a Texas Instruments TAS1020B USB streaming controller. Its firmware is stored in an I²C EEPROM inside the radio. On startup, the TAS1020B loads that firmware and identifies itself to the host as a FLEX-1500. If the firmware isn't available, it falls back and appears as a TI DFU device.
+
+That's actually encouraging.
+
+It means we probably don't need Linux to upload the normal firmware every time. The radio boots its own firmware and presents its USB device to the host.
+
+So our problem is mostly:
+
+"What protocol does the existing FLEX firmware expect?"
+
+rather than:
+
+"How do we recreate the FLEX firmware?"
+
+That's a much nicer problem.
+
+There's also a lot we can reuse
+
+PowerSDR's DSP component, DttSP, is available as source. The KE9NS project is still actively buildable and is based on Flex's last PowerSDR code.
+
+Hamlib isn't the answer for direct hardware access; its current Flex support includes the SDR-1000 and SmartSDR slices, but not a native FLEX-1500 backend.
+
+So I see the project splitting very cleanly:
+
+                    ┌─────────────────┐
+                    │     Quisk       │
+                    │   GNU Radio     │
+                    │ New Linux GUI   │
+                    │   Web Server    │
+                    └────────┬────────┘
+                             │
+                          I/Q + API
+                             │
+                    ┌────────▼────────┐
+                    │  libflex1500    │   ← WE BUILD THIS
+                    └────────┬────────┘
+                             │
+                           libusb
+                             │
+                    ┌────────▼────────┐
+                    │   FLEX-1500     │
+                    │    TAS1020B     │
+                    └─────────────────┘
+
+And that architecture has a nice side effect: we aren't married to any particular SDR application.
+
+We could eventually have:
+
+flex1500d
+
+running as a Linux daemon and expose the radio over a network API.
+
+That would turn this twenty-year-old USB SDR into essentially a network SDR.
+
+What I would do next
+
+Before writing a line of driver code, I'd connect your FLEX-1500 to Ubuntu and run:
+
+lsusb
+
+and:
+
+lsusb -v
+
+plus:
+
+sudo dmesg -w
+
+while plugging the radio in.
+
+If Ubuntu can already enumerate it—which I strongly expect it will—we'll immediately learn the VID/PID, USB interfaces, endpoint addresses and endpoint types. That tells us a surprising amount about how difficult this will be.
+
+Send me the output of:
+
+lsusb
+
+with the FLEX-1500 connected.
+
+Then we'll start poking at the hardware itself.
+
+I think this could turn into a real FLEX-1500 Linux implementation, rather than merely finding a trick to get PowerSDR running under Wine. And because there are clearly still FLEX-1500 owners asking for precisely this as recently as 2026, it could be useful well beyond your own radio.
+
+What about the audio through the USB though? Is that going to be a problem?
+
+Probably not in the way you’re thinking. The FLEX-1500 does not appear to Linux or Windows as a normal USB Audio Class sound card. The USB connection carries streaming baseband data plus control data to/from the radio’s TAS1020B controller.
+
+That distinction is actually good news. We do not need to make ALSA think “here is a FLEX-1500 microphone/speaker device.” We need to reproduce the USB stream that PowerSDR uses for the radio’s digital baseband samples.
+
+So the path is more like:
+
+Antenna
+  ↓
+FLEX-1500 ADC/CODEC
+  ↓
+I/Q or baseband samples
+  ↓
+USB
+  ↓
+our libusb code
+  ↓
+DSP
+  ↓
+demodulated audio
+  ↓
+PulseAudio / PipeWire / ALSA
+  ↓
+PC speakers
+
+And on transmit:
+
+Microphone / digital audio
+  ↓
+PipeWire / ALSA
+  ↓
+DSP/modulator
+  ↓
+baseband samples
+  ↓
+our libusb code
+  ↓
+FLEX-1500
+  ↓
+RF
+
+That is also consistent with the FLEX documentation. The service manual specifically says the USB interface is used for “control and streaming baseband data”, and that the FLEX-1500 processor controls the CODEC, audio routing, baseband routing, gains, clocks, etc.
+
+There is one slightly confusing terminology issue in old Flex discussions: people will sometimes say “audio isn't sent over USB.” What they mean is that the final demodulated speaker audio isn't exposed as a conventional USB sound device. PowerSDR receives baseband samples, performs the SDR DSP on the PC, and produces audio itself. Flex’s own PowerSDR documentation consequently uses Virtual Audio Cable when users want to move that processed audio between applications.
+
+So I think the hardest part of our Linux implementation is going to be identifying the USB sample-stream format, not Linux audio.
+
+Once we get samples into memory, Linux audio is easy. PipeWire/ALSA can handle the actual microphone and speaker side without anything Flex-specific.
+
+The big questions we need to answer from USB captures are:
+
+Which USB endpoint carries RX samples?
+Which carries TX samples?
+Isochronous, bulk, or interrupt transfers?
+Sample format: 16-bit, 24-bit, something packed?
+Interleaved I/Q or separate channels?
+Sample rate—probably one or more fixed rates selected by PowerSDR.
+Does each USB packet have a proprietary header, sequence number, or status bytes?
+Are control/status messages multiplexed with the sample stream?
+
+And that is exactly where lsusb -v will give us our first clues. It will expose the interfaces and endpoint descriptors, including whether Flex is using isochronous endpoints that resemble an audio streaming architecture.
+
+I actually think this makes the project more interesting, because our eventual Linux software wouldn't just “get audio from the FLEX.” We'd have direct access to the raw SDR sample stream.
+
+That means we could eventually do things PowerSDR wasn't really designed for:
+
+                    FLEX-1500
+                        │
+                    raw samples
+                        │
+                   flex1500d
+                  ┌─────┴─────┐
+                  │           │
+               local DSP    network
+                  │           │
+              speakers     WebSocket/
+                           SDR protocol
+
+We could conceivably turn the 1500 into a little headless network SDR.
+
+So no, I don't think USB audio itself is a showstopper. The proprietary USB streaming protocol is the challenge. Once we understand that protocol, Linux audio is one of the easier pieces.
+
+And that's why I'd really like to see the lsusb -v output next. If it reveals isochronous streaming endpoints, we'll immediately know quite a bit more about how Flex implemented the sample path.

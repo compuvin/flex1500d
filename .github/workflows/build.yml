@@ -22,13 +22,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential cmake pkg-config libusb-1.0-0-dev
+          sudo apt-get install --yes build-essential cmake pkg-config \
+            libusb-1.0-0-dev libsoapysdr-dev soapysdr-tools
 
       - name: Configure
         run: >-
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_C_FLAGS=-Werror
+          -DCMAKE_CXX_FLAGS=-Werror
+          -DFLEX1500_BUILD_SOAPYSDR=ON
           -DFLEX1500_BUILD_TX_RESEARCH=OFF
 
       - name: Build

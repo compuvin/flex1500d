@@ -15,10 +15,12 @@ FLEX-1500 USB
     -> SDR application
 ```
 
-The first general adapter candidate is a SoapySDR device module. That would map
-application requests for sample rate, center frequency, and sample streaming to
-the receive-only daemon API. Applications with suitable SoapySDR integration
-could then use the radio without knowing the FLEX-1500 USB protocol.
+The first general adapter is now an initial SoapySDR device module. It maps
+application requests for the fixed sample rate, center frequency, and sample
+streaming to the receive-only daemon API. Its offline end-to-end test passes
+against a synthetic API daemon, and its live path has been validated with the
+FLEX-1500 and SDR Oxide. Additional applications still require individual
+compatibility testing. See `SOAPYSDR.md`.
 
 Additional bridges can be evaluated for applications that speak only another
 network protocol. An `rtl_tcp`-style bridge could broaden basic receive

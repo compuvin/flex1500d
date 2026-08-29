@@ -36,10 +36,11 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
   automatically and shut the radio down cleanly.
 - [ ] Securely expose the API to other computers on the local network, turning
   a USB-connected FLEX-1500 into a practical network-accessible SDR.
-- [ ] Build compatibility adapters so established SDR applications can connect
-  to the `flex1500d` API and use the FLEX-1500 for receive. Likely starting
-  points include SoapySDR and other interfaces supported by common Linux SDR
-  programs.
+- [x] Build an initial SoapySDR compatibility adapter so established SDR
+  applications can connect to the `flex1500d` API and use the FLEX-1500 for
+  receive; first validated with SDR Oxide.
+- [ ] Test and refine compatibility with additional established SDR
+  applications and add other adapters where they provide useful coverage.
 - [ ] Add normal receiver controls such as adjustable filter bandwidth, gain,
   squelch, and improved audio/DSP behavior.
 - [ ] Support more than one useful client or consumer without interrupting the
@@ -90,6 +91,7 @@ See [hardware safety](docs/HARDWARE_SAFETY.md) and
 - Detailed USB, sample, ring-buffer, network, and tuning counters
 - Offline IQ inspection, framing, AM/FM/USB/LSB demodulation, and WAV output
 - Opt-in browser RX page with AM, FM, USB, LSB, and CW audio
+- Receive-only SoapySDR adapter for established SDR applications
 - Guarded hardware probes that remain offline unless given an exact execution
   argument
 
@@ -100,7 +102,9 @@ See [hardware safety](docs/HARDWARE_SAFETY.md) and
 - Only one IQ stream client is supported at a time.
 - The browser page is a development harness, not the long-term user interface.
 - DSP filters and gain controls are not yet generally adjustable.
-- There is no SoapySDR, Hamlib, or other compatibility adapter yet.
+- The initial SoapySDR adapter has been validated with live radio data and SDR
+  Oxide, but broader application compatibility still needs testing; there is
+  no Hamlib or other adapter yet.
 - There is no installer, systemd unit, or background-service configuration;
   the daemon currently runs in the foreground.
 - Transmit is unsupported and intentionally disabled in the daemon/API.
@@ -108,11 +112,12 @@ See [hardware safety](docs/HARDWARE_SAFETY.md) and
 ## Requirements
 
 The initial development and testing platform is Ubuntu Linux. Install the
-compiler, CMake, pkg-config, and libusb development files:
+compiler, CMake, pkg-config, libusb, and SoapySDR development files:
 
 ```sh
 sudo apt update
-sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev
+sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev \
+  libsoapysdr-dev soapysdr-tools
 ```
 
 The browser test page additionally requires a browser with `AudioWorklet` and
@@ -128,9 +133,16 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The clean default configuration currently runs 17 offline tests. Building and
+The clean default configuration currently runs 18 offline tests. Building and
 testing does not enumerate, open, initialize, tune, or otherwise access the
-radio.
+radio. An explicit daemon-only build runs the original 17-test set.
+
+The standard build produces both the API daemon and the receive-only
+`flex1500Support` module. It runs an eighteenth test against a synthetic
+loopback daemon. See [the SoapySDR adapter guide](docs/SOAPYSDR.md).
+
+SoapySDR can be explicitly omitted for a constrained or daemon-only build with
+`-DFLEX1500_BUILD_SOAPYSDR=OFF`; it is included and required by default.
 
 Useful offline checks:
 
@@ -290,3 +302,5 @@ Copyrightable project source is licensed under the
 [GNU General Public License version 3 only](LICENSE). Source files carry the
 SPDX identifier `GPL-3.0-only`. See [NOTICE.md](NOTICE.md) for copyright,
 attribution, dependency, and reverse-engineering provenance.
+
+[![CodeFactor](https://www.codefactor.io/repository/github/compuvin/flex1500d/badge)](https://www.codefactor.io/repository/github/compuvin/flex1500d)

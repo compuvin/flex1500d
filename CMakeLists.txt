@@ -2,15 +2,36 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(flex1500d VERSION 0.1.0 LANGUAGES C)
+project(flex1500d VERSION 0.1.0 LANGUAGES C CXX)
 
 include(CTest)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
+option(FLEX1500_BUILD_SOAPYSDR
+    "Build the receive-only SoapySDR adapter"
+    ON
+)
+if(FLEX1500_BUILD_SOAPYSDR)
+    find_package(SoapySDR 0.8 REQUIRED)
+endif()
+
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(FLEX1500_BUILD_SOAPYSDR)
+    SOAPY_SDR_MODULE_UTIL(
+        TARGET flex1500Support
+        SOURCES soapy/Flex1500Device.cpp
+    )
+    target_compile_options(flex1500Support PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+endif()
 
 option(FLEX1500_BUILD_TX_RESEARCH
     "Build minimally tested, dummy-load-only standalone TX research probes"
@@ -159,6 +180,20 @@ target_compile_options(flex1500-settled-rx-capture PRIVATE
 )
 
 if(BUILD_TESTING)
+    if(TARGET flex1500Support)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_executable(soapy-adapter-test tests/soapy_adapter_test.cpp)
+        target_link_libraries(soapy-adapter-test PRIVATE SoapySDR)
+        target_compile_options(soapy-adapter-test PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        add_test(NAME soapy-adapter-offline
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/mock_soapy_daemon.py
+                $<TARGET_FILE:soapy-adapter-test>
+                $<TARGET_FILE_DIR:flex1500Support>
+        )
+    endif()
     add_executable(protocol-policy-test tests/protocol_policy_test.c)
     target_link_libraries(protocol-policy-test PRIVATE flex1500_protocol)
     target_compile_options(protocol-policy-test PRIVATE -Wall -Wextra -Wpedantic)

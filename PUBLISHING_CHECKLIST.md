@@ -20,7 +20,7 @@ release of `flex1500d`.
 - [x] Select GNU GPL version 3 as the project license.
 - [x] Add the complete GPLv3 license text as `LICENSE`.
 - [x] Initialize and inspect the real Git repository with `main` as the initial
-  branch; no commit or remote has been created.
+  branch; create the reviewed initial commit and configure the GitHub remote.
 - [x] Review `.gitignore` before the first commit and add local-tool,
   editor/OS, swap-file, and compilation-database exclusions.
 - [x] Add `SPDX-License-Identifier: GPL-3.0-only` to C sources, headers, tests,
@@ -93,6 +93,6 @@ release of `flex1500d`.
 - [x] Review the complete staged first commit: 73 text files, no forbidden
   binaries/captures/build artifacts, no secrets/private paths, no unstaged or
   untracked publishable files, and a clean staged whitespace check.
-- [ ] Create the approved `v0.1.0` tag after the initial commit exists.
-- [ ] Create the GitHub repository and push only after KB1JDX approves the
-  final staged contents.
+- [x] Create the approved `v0.1.0` tag after the reviewed publication commit.
+- [x] Create the public GitHub repository and push only after KB1JDX approves
+  the final staged contents.

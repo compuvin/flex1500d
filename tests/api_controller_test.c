@@ -10,6 +10,7 @@
 typedef struct fake_radio {
     unsigned calls;
     uint32_t frequency;
+    int32_t gain_db;
     int result;
 } fake_radio;
 
@@ -21,6 +22,14 @@ static int tune_rx(void *context, uint32_t frequency, uint32_t *filter)
     if (radio->result != 0) return radio->result;
     *filter = 5;
     return 0;
+}
+
+static int set_gain(void *context, int32_t gain_db)
+{
+    fake_radio *radio = context;
+    ++radio->calls;
+    radio->gain_db = gain_db;
+    return radio->result;
 }
 
 static flex1500_api_action dispatch(
@@ -48,6 +57,7 @@ int main(void)
     flex1500_api_controller_init(&api, true, true, true);
     api.radio_context = &radio;
     api.tune_rx = tune_rx;
+    api.set_rx_gain = set_gain;
 
     CHECK(dispatch(&api, "GET /v1/status HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
@@ -66,17 +76,33 @@ int main(void)
     CHECK(radio.calls == 1 && radio.frequency == 10000000);
     CHECK(strstr(response, "\"rx_filter\":5") != NULL);
 
+    CHECK(dispatch(&api, "PUT /v1/radio/gain/-10 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(radio.calls == 2 && radio.gain_db == -10);
+    CHECK(strstr(response, "\"rx_gain_db\":-10") != NULL);
+    CHECK(dispatch(&api, "PUT /v1/radio/gain/15 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(radio.calls == 2 && strstr(response, "404 Not Found") != NULL);
+    CHECK(dispatch(&api, "PUT /v1/radio/bandwidth/2400 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(flex1500_api_rx_bandwidth(&api) == 2400);
+    CHECK(strstr(response, "\"rx_bandwidth_hz\":2400") != NULL);
+    CHECK(dispatch(&api, "PUT /v1/radio/squelch/-60 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(api.rx_squelch_db == -60);
+    CHECK(strstr(response, "\"rx_squelch_db\":-60") != NULL);
+
     CHECK(dispatch(&api,
                    "PUT /v1/radio/frequency/99999 HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
-    CHECK(radio.calls == 1);
+    CHECK(radio.calls == 2);
     CHECK(strstr(response, "400 Bad Request") != NULL);
 
     radio.result = -1;
     CHECK(dispatch(&api,
                    "PUT /v1/radio/frequency/10000000 HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RX_TUNE_FAILED);
-    CHECK(radio.calls == 2);
+    CHECK(radio.calls == 3);
     CHECK(strstr(response, "500 Internal Server Error") != NULL);
     radio.result = 0;
 
@@ -94,7 +120,7 @@ int main(void)
     CHECK(dispatch(&api,
                    "PUT /v1/radio/frequency/10000000 HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
-    CHECK(radio.calls == 2);
+    CHECK(radio.calls == 3);
     CHECK(strstr(response, "404 Not Found") != NULL);
     CHECK(dispatch(&api, "GET /v1/stream/iq HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);

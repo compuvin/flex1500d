@@ -34,6 +34,16 @@ int main(int argc, char **argv)
     device->setSampleRate(SOAPY_SDR_RX, 0, 48000.0);
     device->setFrequency(SOAPY_SDR_RX, 0, 7100000.0);
     CHECK(device->getFrequency(SOAPY_SDR_RX, 0) == 7100000.0);
+    CHECK(device->listGains(SOAPY_SDR_RX, 0) == std::vector<std::string>{"RX"});
+    CHECK(device->getGain(SOAPY_SDR_RX, 0) == 20.0);
+    device->setGain(SOAPY_SDR_RX, 0, 10.0);
+    CHECK(device->getGain(SOAPY_SDR_RX, 0) == 10.0);
+    CHECK(device->getGainRange(SOAPY_SDR_RX, 0).minimum() == -10.0);
+    CHECK(device->getGainRange(SOAPY_SDR_RX, 0).maximum() == 30.0);
+    device->setBandwidth(SOAPY_SDR_RX, 0, 2400.0);
+    CHECK(device->getBandwidth(SOAPY_SDR_RX, 0) == 2400.0);
+    device->writeSetting("squelch_db", "-60");
+    CHECK(device->readSetting("squelch_db") == "-60");
 
     SoapySDR::Stream *stream = device->setupStream(
         SOAPY_SDR_RX, SOAPY_SDR_CF32);

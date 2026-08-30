@@ -93,10 +93,22 @@ static void request_server_stop(int signal_number)
 static int send_all(int socket_fd, const char *data, size_t length)
 {
     size_t sent = 0;
+    unsigned int waits = 0;
     while (sent < length) {
         ssize_t result = send(socket_fd, data + sent, length - sent,
                               MSG_NOSIGNAL);
+        if (result < 0 && errno == EINTR) continue;
+        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (++waits > 50) return -1;
+            struct pollfd writable = {.fd = socket_fd, .events = POLLOUT};
+            int ready = poll(&writable, 1, 100);
+            if (ready < 0 && errno == EINTR) continue;
+            if (ready < 0 || (ready > 0 &&
+                (writable.revents & (POLLERR | POLLHUP | POLLNVAL)))) return -1;
+            continue;
+        }
         if (result <= 0) return -1;
+        waits = 0;
         sent += (size_t)result;
     }
     return 0;
@@ -232,9 +244,15 @@ static int api_tune_rx(void *context, uint32_t frequency_hz,
     return flex1500_usb_rx_filter(receiver, rx_filter) ? 0 : -1;
 }
 
+static int api_set_rx_gain(void *context, int32_t gain_db)
+{
+    return flex1500_usb_rx_set_gain(context, gain_db) == 0 ? 0 : -1;
+}
+
 static flex1500_service_status live_service_status(
     const flex1500_usb_rx *receiver, const flex1500_iq_ring *ring,
-    const flex1500_iq_publisher *publisher)
+    const flex1500_iq_publisher *publisher, uint64_t recovery_attempts,
+    uint64_t recovery_successes)
 {
     const flex1500_usb_rx_counters *usb =
         flex1500_usb_rx_get_counters(receiver);
@@ -276,6 +294,8 @@ static flex1500_service_status live_service_status(
         .last_sentinel_frame = usb->last_sentinel_frame,
         .first_sentinel_ms = usb->first_sentinel_ms,
         .last_sentinel_ms = usb->last_sentinel_ms,
+        .rx_recovery_attempts = recovery_attempts,
+        .rx_recovery_successes = recovery_successes,
     };
 }
 
@@ -285,6 +305,7 @@ static flex1500_radio_info live_radio_info(const flex1500_usb_rx *receiver)
     radio.frequency_known = flex1500_usb_rx_frequency(
         receiver, &radio.frequency_hz);
     radio.rx_filter_known = flex1500_usb_rx_filter(receiver, &radio.rx_filter);
+    radio.rx_gain_known = flex1500_usb_rx_gain(receiver, &radio.rx_gain_db);
     return radio;
 }
 
@@ -327,11 +348,21 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
         close(listener);
         return EXIT_FAILURE;
     }
+    usb_result = flex1500_usb_rx_set_gain(receiver, 20);
+    if (usb_result != 0) {
+        fprintf(stderr, "Live RX gain initialization failed: %s\n",
+                flex1500_usb_rx_last_error(receiver));
+        flex1500_usb_rx_destroy(receiver);
+        flex1500_iq_ring_destroy(&ring);
+        close(listener);
+        return EXIT_FAILURE;
+    }
 
     server_stop_requested = 0;
     signal(SIGINT, request_server_stop);
     signal(SIGTERM, request_server_stop);
     printf("[startup] FLEX-1500 initialized; receive-only USB stream active\n");
+    printf("[startup] receive gain set to +20 dB\n");
     printf("[startup] API listening on http://127.0.0.1:%lu (tuning=%s, test-page=%s)\n",
            port, rx_tuning_enabled ? "enabled" : "disabled",
            test_page_enabled ? "enabled" : "disabled");
@@ -343,26 +374,74 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                                  test_page_enabled);
     api.radio_context = receiver;
     api.tune_rx = api_tune_rx;
+    api.set_rx_gain = api_set_rx_gain;
+    uint64_t recovery_attempts = 0;
+    uint64_t recovery_successes = 0;
 
-    while (!server_stop_requested && flex1500_usb_rx_is_running(receiver)) {
+    while (!server_stop_requested) {
         usb_result = flex1500_usb_rx_pump(receiver);
-        if (usb_result != 0) break;
+        if (usb_result != 0 || !flex1500_usb_rx_is_running(receiver)) {
+            uint32_t restore_frequency = 0;
+            int32_t restore_gain = 20;
+            bool restore_frequency_known = flex1500_usb_rx_frequency(
+                receiver, &restore_frequency);
+            (void)flex1500_usb_rx_gain(receiver, &restore_gain);
+            char failure[160];
+            snprintf(failure, sizeof(failure), "%s",
+                     flex1500_usb_rx_last_error(receiver));
+            if (iq_client >= 0) {
+                close(iq_client);
+                iq_client = -1;
+                flex1500_iq_publisher_disconnect(&publisher);
+            }
+            flex1500_usb_rx_stop(receiver);
+            fprintf(stderr, "[recovery] receive stopped: %s\n", failure);
+            fprintf(stderr,
+                    "[recovery] if 2192:1502 does not reappear, power-cycle "
+                    "the FLEX-1500; a live USB reconnect may not re-enumerate\n");
+            bool recovered = false;
+            for (unsigned int attempt = 1;
+                 attempt <= 60 && !server_stop_requested; ++attempt) {
+                ++recovery_attempts;
+                fprintf(stderr, "[recovery] attempt %u/60 in 1 second\n", attempt);
+                poll(NULL, 0, 1000);
+                if (flex1500_usb_rx_start(receiver) != 0) {
+                    fprintf(stderr, "[recovery] reopen failed: %s\n",
+                            flex1500_usb_rx_last_error(receiver));
+                    continue;
+                }
+                if (flex1500_usb_rx_set_gain(receiver, restore_gain) != 0 ||
+                    (restore_frequency_known && flex1500_usb_rx_tune(
+                        receiver, restore_frequency) != 0)) {
+                    fprintf(stderr, "[recovery] state restore failed: %s\n",
+                            flex1500_usb_rx_last_error(receiver));
+                    flex1500_usb_rx_stop(receiver);
+                    continue;
+                }
+                flex1500_iq_ring_clear(&ring);
+                ++recovery_successes;
+                recovered = true;
+                printf("[recovery] receive restored (gain=%d dB%s)\n",
+                       restore_gain, restore_frequency_known ? ", frequency restored" : "");
+                fflush(stdout);
+                break;
+            }
+            if (!recovered) break;
+            continue;
+        }
 
-        for (;;) {
+        if (http_client.fd < 0) {
             int client = accept(listener, NULL, NULL);
-            if (client < 0) break;
-            if (fcntl(client, F_SETFL,
-                      fcntl(client, F_GETFL) | O_NONBLOCK) < 0) {
-                close(client);
-                continue;
+            if (client >= 0) {
+                if (fcntl(client, F_SETFL,
+                          fcntl(client, F_GETFL) | O_NONBLOCK) < 0) {
+                    close(client);
+                } else {
+                    http_client.fd = client;
+                    http_client.length = 0;
+                    http_client.request[0] = '\0';
+                }
             }
-            if (http_client.fd >= 0) {
-                close(client);
-                continue;
-            }
-            http_client.fd = client;
-            http_client.length = 0;
-            http_client.request[0] = '\0';
         }
 
         if (http_client.fd >= 0) {
@@ -382,7 +461,8 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 http_client.request, http_client.length);
             if (complete) {
                 flex1500_service_status status = live_service_status(
-                    receiver, &ring, &publisher);
+                    receiver, &ring, &publisher, recovery_attempts,
+                    recovery_successes);
                 flex1500_radio_info radio = live_radio_info(receiver);
                 char response[4096];
                 size_t response_length = 0;
@@ -393,12 +473,6 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                     sizeof(response), &response_length, &tuned_frequency,
                     &tuned_filter);
                 if (action == FLEX1500_API_TUNED_RX) {
-                    if (iq_client >= 0) {
-                        close(iq_client);
-                        iq_client = -1;
-                        flex1500_iq_publisher_disconnect(&publisher);
-                        printf("[stream] IQ client closed for RX retune\n");
-                    }
                     printf("[radio] tuned RX to %u Hz; RX filter %u selected\n",
                            tuned_frequency, tuned_filter);
                     send_all(http_client.fd, response, response_length);
@@ -413,8 +487,13 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                     "Content-Type: application/octet-stream\r\n"
                     "Connection: close\r\n"
                     "Cache-Control: no-store\r\n\r\n";
-                if (iq_client < 0 &&
-                    send_all(http_client.fd, stream_header,
+                if (iq_client >= 0) {
+                    close(iq_client);
+                    iq_client = -1;
+                    flex1500_iq_publisher_disconnect(&publisher);
+                    printf("[stream] previous IQ client replaced\n");
+                }
+                if (send_all(http_client.fd, stream_header,
                              sizeof(stream_header) - 1) == 0) {
                     iq_client = http_client.fd;
                     http_client.fd = -1;

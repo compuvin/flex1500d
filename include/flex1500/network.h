@@ -56,6 +56,8 @@ typedef struct flex1500_service_status {
     uint64_t last_sentinel_frame;
     uint64_t first_sentinel_ms;
     uint64_t last_sentinel_ms;
+    uint64_t rx_recovery_attempts;
+    uint64_t rx_recovery_successes;
 } flex1500_service_status;
 
 typedef struct flex1500_radio_info {
@@ -70,8 +72,11 @@ typedef struct flex1500_radio_info {
     uint32_t frequency_hz;
     bool rx_filter_known;
     uint32_t rx_filter;
+    bool rx_gain_known;
+    int32_t rx_gain_db;
     const char *rx_mode;
     uint32_t rx_bandwidth_hz;
+    int32_t rx_squelch_db;
 } flex1500_radio_info;
 
 size_t flex1500_build_status_json(const flex1500_service_status *status,
@@ -100,5 +105,10 @@ bool flex1500_parse_rx_frequency_request(const char *request,
 /* Parse exactly: PUT /v1/radio/mode/am|fm|usb|lsb|cw HTTP/... */
 bool flex1500_parse_rx_mode_request(const char *request,
                                     const char **mode);
+bool flex1500_parse_rx_gain_request(const char *request, int32_t *gain_db);
+bool flex1500_parse_rx_bandwidth_request(const char *request,
+                                         uint32_t *bandwidth_hz);
+bool flex1500_parse_rx_squelch_request(const char *request,
+                                       int32_t *squelch_db);
 
 #endif

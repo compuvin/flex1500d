@@ -46,9 +46,12 @@ struct flex1500_usb_rx {
     bool filter_known;
     uint32_t frequency_hz;
     uint32_t rx_filter;
+    bool gain_known;
+    int32_t gain_db;
     uint8_t next_command_index;
     uint64_t started_ms;
     bool sentinel_seen;
+    unsigned int consecutive_transfer_failures;
     char last_error[160];
 };
 
@@ -164,6 +167,7 @@ static void rx_complete(struct libusb_transfer *transfer)
     if (receiver->active_transfers > 0) --receiver->active_transfers;
 
     if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
+        receiver->consecutive_transfer_failures = 0;
         for (int index = 0; index < transfer->num_iso_packets; ++index) {
             struct libusb_iso_packet_descriptor *packet =
                 &transfer->iso_packet_desc[index];
@@ -200,6 +204,10 @@ static void rx_complete(struct libusb_transfer *transfer)
         receiver->counters.usb_packet_errors += RX_PACKETS_PER_TRANSFER;
         ++receiver->counters.transfer_status_errors;
         classify_transfer_status(receiver, transfer->status, false);
+        if (++receiver->consecutive_transfer_failures >= RX_TRANSFER_COUNT) {
+            set_error(receiver, "RX stream unhealthy after repeated USB transfer failures");
+            receiver->running = false;
+        }
     }
 
     if (!receiver->stopping && receiver->running) {
@@ -263,6 +271,7 @@ void flex1500_usb_rx_stop(flex1500_usb_rx *receiver)
     receiver->frequency_known = false;
     receiver->filter_known = false;
     receiver->sentinel_seen = false;
+    receiver->consecutive_transfer_failures = 0;
     receiver->next_command_index = INITIALIZE_INDEX + 1;
 }
 
@@ -425,6 +434,24 @@ int flex1500_usb_rx_tune(flex1500_usb_rx *receiver, uint32_t frequency_hz)
     return LIBUSB_SUCCESS;
 }
 
+int flex1500_usb_rx_set_gain(flex1500_usb_rx *receiver, int32_t gain_db)
+{
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE];
+    if (receiver == NULL || !receiver->running || receiver->handle == NULL ||
+        gain_db < -10 || gain_db > 30 || gain_db % 10 != 0) {
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+    flex1500_rx_gain gain = (flex1500_rx_gain)((gain_db + 10) / 10);
+    if (!flex1500_build_rx_gain_request(receiver->next_command_index++, gain,
+                                        packet)) return LIBUSB_ERROR_INVALID_PARAM;
+    int result = send_rx_command(receiver, packet, "send SET_TRX_PREAMP");
+    if (result == LIBUSB_SUCCESS) {
+        receiver->gain_db = gain_db;
+        receiver->gain_known = true;
+    }
+    return result;
+}
+
 bool flex1500_usb_rx_is_running(const flex1500_usb_rx *receiver)
 {
     return receiver != NULL && receiver->running;
@@ -463,5 +490,12 @@ bool flex1500_usb_rx_filter(const flex1500_usb_rx *receiver,
         return false;
     }
     *filter = receiver->rx_filter;
+    return true;
+}
+
+bool flex1500_usb_rx_gain(const flex1500_usb_rx *receiver, int32_t *gain_db)
+{
+    if (receiver == NULL || gain_db == NULL || !receiver->gain_known) return false;
+    *gain_db = receiver->gain_db;
     return true;
 }

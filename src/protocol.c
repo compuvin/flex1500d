@@ -163,6 +163,36 @@ bool flex1500_rx_filter_for_frequency(uint32_t frequency_hz,
     return true;
 }
 
+bool flex1500_build_rx_gain_request(
+    uint8_t index, flex1500_rx_gain gain,
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE])
+{
+    if (gain < FLEX1500_RX_GAIN_MINUS_10_DB ||
+        gain > FLEX1500_RX_GAIN_PLUS_30_DB) {
+        return false;
+    }
+    memset(packet, 0, FLEX1500_COMMAND_PACKET_SIZE);
+    packet[0] = index;
+    store_be32(&packet[4], FLEX1500_OP_SET_TRX_PREAMP);
+    store_be32(&packet[8], (uint32_t)gain);
+    return true;
+}
+
+bool flex1500_build_rx_antenna_request(
+    uint8_t index, flex1500_rx_antenna antenna,
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE])
+{
+    if (antenna < FLEX1500_RX_ANTENNA_PA ||
+        antenna > FLEX1500_RX_ANTENNA_XVTX_COM) {
+        return false;
+    }
+    memset(packet, 0, FLEX1500_COMMAND_PACKET_SIZE);
+    packet[0] = index;
+    store_be32(&packet[4], FLEX1500_OP_SET_RX1_ANT);
+    store_be32(&packet[8], (uint32_t)antenna);
+    return true;
+}
+
 bool flex1500_build_pa_filter_request(
     uint8_t index, uint32_t filter,
     uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE])

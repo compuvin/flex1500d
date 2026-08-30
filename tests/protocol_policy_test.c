@@ -34,6 +34,15 @@ int main(void)
         0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
     uint8_t filter_request[FLEX1500_COMMAND_PACKET_SIZE];
+    const uint8_t expected_gain_plus_20[FLEX1500_COMMAND_PACKET_SIZE] = {
+        0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xdf, 0x00, 0x00,
+        0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    const uint8_t expected_xvrx_antenna[FLEX1500_COMMAND_PACKET_SIZE] = {
+        0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xfe, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    uint8_t rx_control_request[FLEX1500_COMMAND_PACKET_SIZE];
     const uint8_t expected_pa_filter_5[FLEX1500_COMMAND_PACKET_SIZE] = {
         0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xec, 0x00, 0x00,
         0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -114,6 +123,18 @@ int main(void)
     CHECK(memcmp(filter_request, expected_filter_5,
                   sizeof(filter_request)) == 0);
     CHECK(!flex1500_build_rx_filter_request(12, 12, filter_request));
+    CHECK(flex1500_build_rx_gain_request(
+        13, FLEX1500_RX_GAIN_PLUS_20_DB, rx_control_request));
+    CHECK(memcmp(rx_control_request, expected_gain_plus_20,
+                 sizeof(rx_control_request)) == 0);
+    CHECK(!flex1500_build_rx_gain_request(
+        13, (flex1500_rx_gain)5, rx_control_request));
+    CHECK(flex1500_build_rx_antenna_request(
+        15, FLEX1500_RX_ANTENNA_XVRX, rx_control_request));
+    CHECK(memcmp(rx_control_request, expected_xvrx_antenna,
+                 sizeof(rx_control_request)) == 0);
+    CHECK(!flex1500_build_rx_antenna_request(
+        15, (flex1500_rx_antenna)3, rx_control_request));
     CHECK(flex1500_rx_filter_for_frequency(100000, &selected_filter));
     CHECK(selected_filter == 0);
     CHECK(flex1500_rx_filter_for_frequency(479999, &selected_filter));

@@ -121,6 +121,15 @@ target_link_libraries(flex1500-rx-tune-probe PRIVATE
     PkgConfig::LIBUSB
 )
 
+add_executable(flex1500-rx-gain-probe src/flex1500_rx_gain_probe.c)
+target_link_libraries(flex1500-rx-gain-probe PRIVATE
+    flex1500_protocol
+    PkgConfig::LIBUSB
+)
+target_compile_options(flex1500-rx-gain-probe PRIVATE
+    -Wall -Wextra -Wpedantic
+)
+
 add_executable(flex1500-rx-filter-click-probe
     src/flex1500_rx_filter_click_probe.c
 )
@@ -254,6 +263,7 @@ if(BUILD_TESTING)
     add_test(NAME settled-rx-capture-default-is-offline
         COMMAND flex1500-settled-rx-capture)
     add_test(NAME rx-tune-probe-default-is-offline COMMAND flex1500-rx-tune-probe)
+    add_test(NAME rx-gain-probe-default-is-offline COMMAND flex1500-rx-gain-probe)
     add_test(NAME rx-tune-probe-plan-is-offline
         COMMAND flex1500-rx-tune-probe --plan 10000000)
     add_test(NAME rx-filter-click-probe-default-is-offline

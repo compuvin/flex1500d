@@ -30,7 +30,7 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
 - [x] Stream the radio's raw receive signal through a documented local API.
 - [x] Provide a simple browser page for tuning and listening in AM, FM, USB,
   LSB, and CW.
-- [ ] Make receive operation dependable enough for regular station use,
+- [x] Make receive operation dependable enough for regular station use,
   including clearer diagnostics and recovery after errors or disconnects.
 - [ ] Package `flex1500d` as a proper Linux background service that can start
   automatically and shut the radio down cleanly.
@@ -41,7 +41,7 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
   receive; first validated with SDR Oxide.
 - [ ] Test and refine compatibility with additional established SDR
   applications and add other adapters where they provide useful coverage.
-- [ ] Add normal receiver controls such as adjustable filter bandwidth, gain,
+- [x] Add normal receiver controls such as adjustable filter bandwidth, gain,
   squelch, and improved audio/DSP behavior.
 - [ ] Support more than one useful client or consumer without interrupting the
   receive stream.

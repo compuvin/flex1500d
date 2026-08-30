@@ -59,6 +59,7 @@ int flex1500_usb_rx_pump(flex1500_usb_rx *receiver);
 
 /* Sends only SET_RX1_FREQ_TW followed by the mapped SET_RX1_FILTER. */
 int flex1500_usb_rx_tune(flex1500_usb_rx *receiver, uint32_t frequency_hz);
+int flex1500_usb_rx_set_gain(flex1500_usb_rx *receiver, int32_t gain_db);
 
 /* Cancel host-side IN transfers, release interface 3, and close USB. */
 void flex1500_usb_rx_stop(flex1500_usb_rx *receiver);
@@ -73,5 +74,6 @@ bool flex1500_usb_rx_frequency(const flex1500_usb_rx *receiver,
                                uint32_t *frequency_hz);
 bool flex1500_usb_rx_filter(const flex1500_usb_rx *receiver,
                             uint32_t *filter);
+bool flex1500_usb_rx_gain(const flex1500_usb_rx *receiver, int32_t *gain_db);
 
 #endif

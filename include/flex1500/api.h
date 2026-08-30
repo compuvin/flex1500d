@@ -11,13 +11,17 @@
 
 typedef int (*flex1500_api_tune_rx)(void *context, uint32_t frequency_hz,
                                     uint32_t *rx_filter);
+typedef int (*flex1500_api_set_rx_gain)(void *context, int32_t gain_db);
 typedef struct flex1500_api_controller {
     bool rx_tuning_enabled;
     bool iq_stream_active;
     bool test_page_enabled;
     const char *rx_mode;
+    uint32_t rx_bandwidth_hz;
+    int32_t rx_squelch_db;
     void *radio_context;
     flex1500_api_tune_rx tune_rx;
+    flex1500_api_set_rx_gain set_rx_gain;
 } flex1500_api_controller;
 
 typedef enum flex1500_api_action {

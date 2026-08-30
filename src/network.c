@@ -77,7 +77,9 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         "  \"first_sentinel_frame\": %llu,\n"
         "  \"last_sentinel_frame\": %llu,\n"
         "  \"first_sentinel_ms\": %llu,\n"
-        "  \"last_sentinel_ms\": %llu\n"
+        "  \"last_sentinel_ms\": %llu,\n"
+        "  \"rx_recovery_attempts\": %llu,\n"
+        "  \"rx_recovery_successes\": %llu\n"
         "}\n",
         status->state, status->radio_open ? "true" : "false",
         status->network_listening ? "true" : "false", status->sample_rate,
@@ -116,7 +118,9 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         (unsigned long long)status->first_sentinel_frame,
         (unsigned long long)status->last_sentinel_frame,
         (unsigned long long)status->first_sentinel_ms,
-        (unsigned long long)status->last_sentinel_ms);
+        (unsigned long long)status->last_sentinel_ms,
+        (unsigned long long)status->rx_recovery_attempts,
+        (unsigned long long)status->rx_recovery_successes);
     if (written < 0 || (size_t)written >= capacity) return 0;
     return (size_t)written;
 }
@@ -126,6 +130,7 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
 {
     char frequency[32];
     char filter[32];
+    char gain[32];
     if (radio->frequency_known) {
         snprintf(frequency, sizeof(frequency), "%u", radio->frequency_hz);
     } else {
@@ -136,6 +141,8 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
     } else {
         snprintf(filter, sizeof(filter), "null");
     }
+    if (radio->rx_gain_known) snprintf(gain, sizeof(gain), "%d", radio->rx_gain_db);
+    else snprintf(gain, sizeof(gain), "null");
     int written = snprintf(
         output, capacity,
         "{\n"
@@ -148,15 +155,17 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
         "  \"rx_tuning_enabled\": %s,\n"
         "  \"frequency_hz\": %s,\n"
         "  \"rx_filter\": %s,\n"
+        "  \"rx_gain_db\": %s,\n"
         "  \"rx_mode\": \"%s\",\n"
-        "  \"rx_bandwidth_hz\": %u\n"
+        "  \"rx_bandwidth_hz\": %u,\n"
+        "  \"rx_squelch_db\": %d\n"
         "}\n",
         radio->model, radio->firmware, radio->usb_vendor_id,
         radio->usb_product_id, radio->receive_only ? "true" : "false",
         radio->transmit_enabled ? "true" : "false",
-        radio->rx_tuning_enabled ? "true" : "false", frequency, filter,
+        radio->rx_tuning_enabled ? "true" : "false", frequency, filter, gain,
         radio->rx_mode != NULL ? radio->rx_mode : "am",
-        radio->rx_bandwidth_hz);
+        radio->rx_bandwidth_hz, radio->rx_squelch_db);
     if (written < 0 || (size_t)written >= capacity) return 0;
     return (size_t)written;
 }
@@ -277,4 +286,65 @@ bool flex1500_parse_rx_mode_request(const char *request, const char **mode)
         }
     }
     return false;
+}
+
+bool flex1500_parse_rx_gain_request(const char *request, int32_t *gain_db)
+{
+    static const char prefix[] = "PUT /v1/radio/gain/";
+    static const int32_t gains[] = {-10, 0, 10, 20, 30};
+    if (request == NULL || gain_db == NULL ||
+        strncmp(request, prefix, sizeof(prefix) - 1) != 0) return false;
+    const char *value = request + sizeof(prefix) - 1;
+    for (size_t index = 0; index < sizeof(gains) / sizeof(gains[0]); ++index) {
+        char expected[8];
+        snprintf(expected, sizeof(expected), "%d", gains[index]);
+        size_t length = strlen(expected);
+        if (strncmp(value, expected, length) == 0 && value[length] == ' ') {
+            *gain_db = gains[index];
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool parse_u32_path(const char *request, const char *prefix,
+                           uint32_t *value)
+{
+    if (request == NULL || value == NULL || strncmp(request, prefix, strlen(prefix)) != 0)
+        return false;
+    const char *cursor = request + strlen(prefix);
+    if (*cursor < '0' || *cursor > '9') return false;
+    uint64_t parsed = 0;
+    while (*cursor >= '0' && *cursor <= '9') {
+        parsed = parsed * 10 + (uint64_t)(*cursor++ - '0');
+        if (parsed > UINT32_MAX) return false;
+    }
+    if (*cursor != ' ') return false;
+    *value = (uint32_t)parsed;
+    return true;
+}
+
+bool flex1500_parse_rx_bandwidth_request(const char *request,
+                                         uint32_t *bandwidth_hz)
+{
+    return parse_u32_path(request, "PUT /v1/radio/bandwidth/", bandwidth_hz) &&
+           *bandwidth_hz >= 100 && *bandwidth_hz <= 20000;
+}
+
+bool flex1500_parse_rx_squelch_request(const char *request, int32_t *squelch_db)
+{
+    static const char prefix[] = "PUT /v1/radio/squelch/";
+    if (request == NULL || squelch_db == NULL ||
+        strncmp(request, prefix, sizeof(prefix) - 1) != 0) return false;
+    const char *cursor = request + sizeof(prefix) - 1;
+    bool negative = *cursor == '-';
+    if (negative) ++cursor;
+    if (*cursor < '0' || *cursor > '9') return false;
+    int32_t parsed = 0;
+    while (*cursor >= '0' && *cursor <= '9') parsed = parsed * 10 + (*cursor++ - '0');
+    if (*cursor != ' ') return false;
+    if (negative) parsed = -parsed;
+    if (parsed < -120 || parsed > 0) return false;
+    *squelch_db = parsed;
+    return true;
 }

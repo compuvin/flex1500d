@@ -111,6 +111,7 @@ int main(void)
     CHECK(strstr(radio_json, "\"rx_tuning_enabled\": true") != NULL);
     CHECK(strstr(radio_json, "\"frequency_hz\": 10000000") != NULL);
     CHECK(strstr(radio_json, "\"rx_filter\": 5") != NULL);
+    CHECK(strstr(radio_json, "\"rx_gain_db\": null") != NULL);
     CHECK(strstr(radio_json, "\"rx_mode\": \"usb\"") != NULL);
     CHECK(strstr(radio_json, "\"rx_bandwidth_hz\": 2700") != NULL);
 
@@ -188,6 +189,27 @@ int main(void)
     CHECK(strcmp(requested_mode, "lsb") == 0);
     CHECK(!flex1500_parse_rx_mode_request(
         "PUT /v1/radio/mode/digital HTTP/1.1\r\n\r\n", &requested_mode));
+    int32_t requested_gain = 0;
+    CHECK(flex1500_parse_rx_gain_request(
+        "PUT /v1/radio/gain/-10 HTTP/1.1\r\n\r\n", &requested_gain));
+    CHECK(requested_gain == -10);
+    CHECK(flex1500_parse_rx_gain_request(
+        "PUT /v1/radio/gain/30 HTTP/1.1\r\n\r\n", &requested_gain));
+    CHECK(requested_gain == 30);
+    CHECK(!flex1500_parse_rx_gain_request(
+        "PUT /v1/radio/gain/15 HTTP/1.1\r\n\r\n", &requested_gain));
+    uint32_t requested_bandwidth = 0;
+    CHECK(flex1500_parse_rx_bandwidth_request(
+        "PUT /v1/radio/bandwidth/2400 HTTP/1.1\r\n\r\n", &requested_bandwidth));
+    CHECK(requested_bandwidth == 2400);
+    CHECK(!flex1500_parse_rx_bandwidth_request(
+        "PUT /v1/radio/bandwidth/50 HTTP/1.1\r\n\r\n", &requested_bandwidth));
+    int32_t requested_squelch = 0;
+    CHECK(flex1500_parse_rx_squelch_request(
+        "PUT /v1/radio/squelch/-60 HTTP/1.1\r\n\r\n", &requested_squelch));
+    CHECK(requested_squelch == -60);
+    CHECK(!flex1500_parse_rx_squelch_request(
+        "PUT /v1/radio/squelch/1 HTTP/1.1\r\n\r\n", &requested_squelch));
 
     size_t frame_length =
         flex1500_encode_iq_frame(0x01020304, samples, 1, frame, sizeof(frame));

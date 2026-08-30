@@ -58,6 +58,7 @@ public:
         if (fd_ >= 0) ::close(fd_);
         fd_ = -1;
     }
+
 private:
     int fd_ = -1;
 };
@@ -245,6 +246,9 @@ public:
             throw std::runtime_error("flex1500: daemon safety contract mismatch");
         tuningEnabled_ = jsonBool(radio.body, "rx_tuning_enabled", false);
         frequency_ = jsonNumber(radio.body, "frequency_hz", 0.0);
+        gain_ = jsonNumber(radio.body, "rx_gain_db", 20.0);
+        bandwidth_ = jsonNumber(radio.body, "rx_bandwidth_hz", 6000.0);
+        squelch_ = jsonNumber(radio.body, "rx_squelch_db", -120.0);
     }
     ~Flex1500Device() override { delete stream_; }
 
@@ -401,6 +405,89 @@ public:
         checkRx(direction, channel);
         return {SoapySDR::Range(MIN_FREQUENCY, MAX_FREQUENCY, 1.0)};
     }
+    std::vector<std::string> listGains(int direction, size_t channel) const override
+    {
+        checkRx(direction, channel);
+        return {"RX"};
+    }
+    void setGain(int direction, size_t channel, double gain) override
+    {
+        checkRx(direction, channel);
+        const double rounded = std::round(gain / 10.0) * 10.0;
+        if (!std::isfinite(gain) || std::abs(gain - rounded) > 0.001 ||
+            rounded < -10.0 || rounded > 30.0)
+            throw std::runtime_error("flex1500: RX gain must be -10, 0, 10, 20, or 30 dB");
+        const int value = static_cast<int>(rounded);
+        const HttpResponse response = request(host_, port_, "PUT",
+            "/v1/radio/gain/" + std::to_string(value));
+        if (response.status != 200)
+            throw std::runtime_error("flex1500: daemon rejected RX gain");
+        gain_ = rounded;
+    }
+    double getGain(int direction, size_t channel) const override
+    {
+        checkRx(direction, channel);
+        return gain_;
+    }
+    SoapySDR::Range getGainRange(int direction, size_t channel) const override
+    {
+        checkRx(direction, channel);
+        return SoapySDR::Range(-10.0, 30.0, 10.0);
+    }
+    void setBandwidth(int direction, size_t channel, double bandwidth) override
+    {
+        checkRx(direction, channel);
+        if (!std::isfinite(bandwidth) || bandwidth < 100.0 || bandwidth > 20000.0)
+            throw std::runtime_error("flex1500: bandwidth outside 100..20000 Hz");
+        const uint32_t rounded = static_cast<uint32_t>(std::llround(bandwidth));
+        const HttpResponse response = request(host_, port_, "PUT",
+            "/v1/radio/bandwidth/" + std::to_string(rounded));
+        if (response.status != 200)
+            throw std::runtime_error("flex1500: daemon rejected RX bandwidth");
+        bandwidth_ = rounded;
+    }
+    double getBandwidth(int direction, size_t channel) const override
+    {
+        checkRx(direction, channel);
+        return bandwidth_;
+    }
+    SoapySDR::RangeList getBandwidthRange(int direction, size_t channel) const override
+    {
+        checkRx(direction, channel);
+        return {SoapySDR::Range(100.0, 20000.0, 1.0)};
+    }
+    SoapySDR::ArgInfoList getSettingInfo(void) const override
+    {
+        SoapySDR::ArgInfo squelch;
+        squelch.key = "squelch_db";
+        squelch.name = "RX squelch";
+        squelch.description = "Host-side receive squelch threshold; -120 is open";
+        squelch.units = "dBFS";
+        squelch.type = SoapySDR::ArgInfo::FLOAT;
+        squelch.range = SoapySDR::Range(-120.0, 0.0, 1.0);
+        squelch.value = std::to_string(static_cast<int>(squelch_));
+        return {squelch};
+    }
+    void writeSetting(const std::string &key, const std::string &value) override
+    {
+        if (key != "squelch_db")
+            throw std::runtime_error("flex1500: unknown setting " + key);
+        std::size_t used = 0;
+        const int threshold = std::stoi(value, &used);
+        if (used != value.size() || threshold < -120 || threshold > 0)
+            throw std::runtime_error("flex1500: squelch must be -120..0 dBFS");
+        const HttpResponse response = request(host_, port_, "PUT",
+            "/v1/radio/squelch/" + std::to_string(threshold));
+        if (response.status != 200)
+            throw std::runtime_error("flex1500: daemon rejected RX squelch");
+        squelch_ = threshold;
+    }
+    std::string readSetting(const std::string &key) const override
+    {
+        if (key != "squelch_db")
+            throw std::runtime_error("flex1500: unknown setting " + key);
+        return std::to_string(static_cast<int>(squelch_));
+    }
     void setSampleRate(int direction, size_t channel, double rate) override
     {
         checkRx(direction, channel);
@@ -422,6 +509,7 @@ public:
         checkRx(direction, channel);
         return {SoapySDR::Range(SAMPLE_RATE, SAMPLE_RATE)};
     }
+
 private:
     void checkRx(int direction, size_t channel) const
     {
@@ -505,6 +593,9 @@ private:
     uint16_t port_;
     bool tuningEnabled_ = false;
     double frequency_ = 0.0;
+    double gain_ = 20.0;
+    double bandwidth_ = 6000.0;
+    double squelch_ = -120.0;
     RxStream *stream_ = nullptr;
 };
 

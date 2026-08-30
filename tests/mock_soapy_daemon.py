@@ -21,6 +21,9 @@ RADIO = b'''{
   "transmit_enabled": false,
   "rx_tuning_enabled": true,
   "frequency_hz": 7000000
+  ,"rx_gain_db": 20
+  ,"rx_bandwidth_hz": 6000
+  ,"rx_squelch_db": -120
 }\n'''
 STATUS = b'{"service":"flex1500d","api_version":1}\n'
 
@@ -54,6 +57,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802 - HTTP handler API
         if self.path == "/v1/radio/frequency/7100000":
             self.send_body(200, b'{"frequency_hz":7100000}\n')
+        elif self.path == "/v1/radio/gain/10":
+            self.send_body(200, b'{"rx_gain_db":10}\n')
+        elif self.path == "/v1/radio/bandwidth/2400":
+            self.send_body(200, b'{"rx_bandwidth_hz":2400}\n')
+        elif self.path == "/v1/radio/squelch/-60":
+            self.send_body(200, b'{"rx_squelch_db":-60}\n')
         else:
             self.send_body(404, b'{"error":"not found"}\n')
 

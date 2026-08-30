@@ -21,12 +21,29 @@ enum {
     FLEX1500_OP_I2C_WRITE_2_VALUE = 1020,
     FLEX1500_OP_GET_FIRMWARE_REV = 1200,
     FLEX1500_OP_INITIALIZE = 1219,
+    FLEX1500_OP_SET_TRX_PREAMP = 1247,
     FLEX1500_OP_SET_RX1_FILTER = 1257,
     FLEX1500_OP_SET_PA_FILTER = 1260,
     FLEX1500_OP_SET_TR = 1276,
+    FLEX1500_OP_SET_RX1_ANT = 1278,
     FLEX1500_OP_SET_AMP_TX1 = 1298,
     FLEX1500_OP_SET_RX1_FREQ_TW = 1347,
 };
+
+typedef enum flex1500_rx_gain {
+    FLEX1500_RX_GAIN_MINUS_10_DB = 0,
+    FLEX1500_RX_GAIN_0_DB = 1,
+    FLEX1500_RX_GAIN_PLUS_10_DB = 2,
+    FLEX1500_RX_GAIN_PLUS_20_DB = 3,
+    FLEX1500_RX_GAIN_PLUS_30_DB = 4,
+} flex1500_rx_gain;
+
+typedef enum flex1500_rx_antenna {
+    /* Main antenna connector and specialized transverter receive paths. */
+    FLEX1500_RX_ANTENNA_PA = 0,
+    FLEX1500_RX_ANTENNA_XVRX = 1,
+    FLEX1500_RX_ANTENNA_XVTX_COM = 2,
+} flex1500_rx_antenna;
 
 #define FLEX1500_MIN_RX_FREQUENCY_HZ UINT32_C(100000)
 #define FLEX1500_MAX_RX_FREQUENCY_HZ UINT32_C(54000000)
@@ -79,6 +96,14 @@ bool flex1500_build_rx_filter_request(
     uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE]);
 bool flex1500_rx_filter_for_frequency(uint32_t frequency_hz,
                                       uint32_t *filter);
+
+/* Researched RX controls; builders do not send packets to the radio. */
+bool flex1500_build_rx_gain_request(
+    uint8_t index, flex1500_rx_gain gain,
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE]);
+bool flex1500_build_rx_antenna_request(
+    uint8_t index, flex1500_rx_antenna antenna,
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE]);
 
 /* PA filter indices 0..7 observed in the PowerSDR filter map. */
 bool flex1500_build_pa_filter_request(

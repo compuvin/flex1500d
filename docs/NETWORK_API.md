@@ -67,8 +67,38 @@ This endpoint does not send a USB command or change radio hardware. It records
 the receive DSP selection used by API clients such as the test page. Initial
 nominal bandwidths are AM 6000 Hz, USB/LSB 2700 Hz, FM 12000 Hz, and CW 500 Hz.
 The SSB passbands are approximately 100–2800 Hz from the carrier. The current
-bandwidth is reported as `rx_bandwidth_hz`. Bandwidth is display-only
-for now. CW uses a 700 Hz beat note in the browser test demodulator.
+bandwidth is reported as `rx_bandwidth_hz`. CW uses a 700 Hz beat note in the
+browser test demodulator.
+Bandwidth is adjustable from 100 through 20,000 Hz with:
+
+```http
+PUT /v1/radio/bandwidth/2400 HTTP/1.1
+```
+
+Host-side squelch uses a dBFS threshold from -120 through 0. A value of -120
+is effectively open:
+
+```http
+PUT /v1/radio/squelch/-60 HTTP/1.1
+```
+
+Both settings are available in the web test page. SoapySDR exposes bandwidth
+through its standard bandwidth interface and squelch as the `squelch_db`
+device setting.
+
+## Receive gain
+
+The armed live receive daemon sets +20 dB at startup and accepts exactly five
+hardware gain settings:
+
+```http
+PUT /v1/radio/gain/20 HTTP/1.1
+```
+
+Valid values are -10, 0, 10, 20, and 30 dB. Successful requests return the
+applied `rx_gain_db`; other values are rejected without a USB write. The same
+control is available through the web test page and SoapySDR's standard RX gain
+interface.
 
 ## Receive-frequency control
 
@@ -87,10 +117,18 @@ returns the applied frequency and filter as JSON. Out-of-range values return
 `radio_command_errors`. Successful paired operations increment
 `rx_tune_operations`.
 
-After both commands succeed, the daemon clears queued pre-tune IQ. If an IQ
-client is attached, the daemon closes that stream so the client must reconnect
-and cannot mistake samples from two center frequencies for one continuous
-stream.
+After both commands succeed, the daemon clears queued pre-tune IQ. An attached
+IQ stream remains connected, allowing the browser test receiver to tune without
+stopping audio. A small amount of already-buffered pre-tune audio may still be
+heard during the transition. SoapySDR clients may continue to reconnect after
+a frequency change to reset their own stream state.
+
+The reconnect path atomically replaces the previous single IQ socket. This
+avoids a race where a fast SoapySDR reconnect arrived before the daemon had
+observed the old socket closing and received a truncated HTTP response. A live
+test retuned an active Soapy stream through 7.1, 14.2, 21.25, and 28.475 MHz,
+then restored 10 MHz, with valid samples after every change and no USB packet
+or radio-command errors.
 
 The new live command is deliberately distinct:
 
@@ -99,11 +137,11 @@ The new live command is deliberately distinct:
   --initialize-radio-and-enable-rx-tuning
 ```
 
-It initializes the radio and permits only receive frequency/filter writes from
-the loopback API. It does not enable PA-filter, PTT, TX samples, EEPROM,
-firmware, antenna, gain, or other control operations. Running it requires a
+It initializes the radio and permits receive frequency/filter and validated
+receive-gain writes from the loopback API. It does not enable PA-filter, PTT,
+TX samples, EEPROM, firmware, antenna/path routing, or other control operations. Running it requires a
 separate exact permission from KB1JDX. The older `--initialize-radio` token does
-not gain tuning capability.
+not enable receive-frequency or receive-gain control.
 
 ## IQ stream endpoint
 

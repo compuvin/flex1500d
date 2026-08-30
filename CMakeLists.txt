@@ -47,6 +47,7 @@ if(FLEX1500_BUILD_TX_RESEARCH)
 endif()
 
 add_library(flex1500_protocol STATIC
+    src/api.c
     src/dsp.c
     src/iq.c
     src/network.c
@@ -180,6 +181,13 @@ target_compile_options(flex1500-settled-rx-capture PRIVATE
 )
 
 if(BUILD_TESTING)
+    add_executable(api-controller-test tests/api_controller_test.c)
+    target_link_libraries(api-controller-test PRIVATE flex1500_protocol)
+    target_compile_options(api-controller-test PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+    add_test(NAME api-controller COMMAND api-controller-test)
+
     if(TARGET flex1500Support)
         find_package(Python3 REQUIRED COMPONENTS Interpreter)
         add_executable(soapy-adapter-test tests/soapy_adapter_test.cpp)

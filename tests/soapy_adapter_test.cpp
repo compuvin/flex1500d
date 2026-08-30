@@ -46,9 +46,23 @@ int main(int argc, char **argv)
     long long timeNs = 0;
     CHECK(device->readStream(stream, buffers, 3, flags, timeNs, 1000000) == 3);
     CHECK(std::abs(samples[0].real() - 100.0f) < 0.001f);
-    CHECK(std::abs(samples[0].imag() + 200.0f) < 0.001f);
+    CHECK(std::abs(samples[0].imag() - 200.0f) < 0.001f);
     CHECK(std::abs(samples[2].real() - 500.0f) < 0.001f);
-    CHECK(std::abs(samples[2].imag() + 600.0f) < 0.001f);
+    CHECK(std::abs(samples[2].imag() - 600.0f) < 0.001f);
+    CHECK(device->deactivateStream(stream) == 0);
+    device->closeStream(stream);
+
+    stream = device->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16);
+    CHECK(stream != nullptr);
+    CHECK(device->activateStream(stream) == 0);
+    int16_t integerSamples[6]{};
+    void *integerBuffers[] = {integerSamples};
+    flags = 0;
+    timeNs = 0;
+    CHECK(device->readStream(stream, integerBuffers, 3, flags, timeNs,
+                             1000000) == 3);
+    CHECK(integerSamples[0] == 100 && integerSamples[1] == 200);
+    CHECK(integerSamples[4] == 500 && integerSamples[5] == 600);
     CHECK(device->deactivateStream(stream) == 0);
     device->closeStream(stream);
     SoapySDR::Device::unmake(device);

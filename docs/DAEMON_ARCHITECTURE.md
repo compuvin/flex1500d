@@ -1,5 +1,28 @@
 # flex1500d receive architecture
 
+## Internal boundaries
+
+The HTTP-facing policy is implemented by the radio-independent API controller
+in `src/api.c`. It owns route dispatch, receive-mode state, capability gates,
+and HTTP/JSON responses. It has no libusb or socket dependency.
+
+The daemon in `src/flex1500d.c` owns loopback sockets, IQ-client lifetime, and
+live status snapshots. Live RX supplies the controller one narrow callback for
+an approved receive-frequency operation; the callback is the only connection
+from API policy to the concrete USB RX backend. The offline server supplies no
+radio callback, so its frequency route cannot invoke hardware behavior.
+
+```text
+HTTP socket -> API controller -> RX-tune callback -> USB RX backend
+                  |
+                  +-> response/status policy
+
+USB IQ -> ring/publisher -> IQ client socket
+```
+
+Transmit research sources are not linked through the controller, callback, or
+daemon. Representative TX/PTT paths remain ordinary 404 responses.
+
 ## Current implementation
 
 The daemon executable is intentionally offline by default. It now provides:

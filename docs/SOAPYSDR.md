@@ -19,6 +19,12 @@ FLEX-1500 -> flex1500d -> HTTP/F15I API -> flex1500Support -> SDR application
 - one stream, matching the daemon's current one-client limit
 - daemon host defaults to `127.0.0.1`, port defaults to `15000`
 
+The FLEX-1500/native `F15I` stream uses the orientation expected by the
+project's browser and offline DSP. The adapter negates Q at the SoapySDR
+boundary so positive/negative frequencies follow SoapySDR application
+conventions; without that conversion, USB and LSB appear reversed. The native
+API bytes are intentionally unchanged.
+
 The adapter verifies that `/v1/radio` reports `receive_only: true` and
 `transmit_enabled: false` before creating a device. It exposes no TX stream,
 PTT, MOX, or other transmit control. SoapySDR supports transmit in its general

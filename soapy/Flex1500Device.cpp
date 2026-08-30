@@ -337,13 +337,16 @@ public:
             stream->samples.size() - stream->sampleOffset);
         if (stream->format == SOAPY_SDR_CF32) {
             auto *output = static_cast<std::complex<float> *>(buffers[0]);
-            std::copy_n(stream->samples.data() + stream->sampleOffset, count, output);
+            for (size_t index = 0; index < count; ++index) {
+                const auto sample = stream->samples[stream->sampleOffset + index];
+                output[index] = {sample.real(), -sample.imag()};
+            }
         } else {
             auto *output = static_cast<int16_t *>(buffers[0]);
             for (size_t index = 0; index < count; ++index) {
                 const auto sample = stream->samples[stream->sampleOffset + index];
                 output[index * 2] = toS16(sample.real());
-                output[index * 2 + 1] = toS16(sample.imag());
+                output[index * 2 + 1] = toS16(-sample.imag());
             }
         }
         stream->sampleOffset += count;

@@ -74,7 +74,10 @@ def main() -> int:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         environment = os.environ.copy()
-        environment["SOAPY_SDR_PLUGIN_PATH"] = str(Path(sys.argv[2]).resolve())
+        module_dir = Path(sys.argv[2]).resolve()
+        environment["SOAPY_SDR_PLUGIN_PATH"] = str(module_dir)
+        # Do not let a previously installed module mask the build under test.
+        environment["SOAPY_SDR_ROOT"] = str(module_dir / "isolated-root")
         result = subprocess.run(
             [sys.argv[1], str(server.server_address[1])], env=environment,
             check=False

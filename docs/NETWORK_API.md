@@ -162,9 +162,9 @@ command uses exclusive creation and refuses to overwrite an existing file.
 - IQ frame headers, integer byte order, and float byte order are byte-tested.
 - The inactive IQ route is tested for `503`.
 - HTTP bytes are tested through an in-process Unix socket pair where permitted.
-- The default receive-only build passes 17 tests. Enabling the separately
+- The default receive-only build passes 19 tests. Enabling the separately
   guarded TX-research build adds five offline/interlock tests for a total of
-  22. Coverage includes rejection of unarmed radio modes, partial HTTP-header
+  24. Coverage includes rejection of unarmed radio modes, partial HTTP-header
   detection, radio metadata, publisher counters, frequency parsing/filter
   boundaries, offline tune rejection, absent TX routes, and—only in the
   research build—isolated TX-probe arming strings.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "flex1500/api.h"
 #include "flex1500/dsp.h"
 #include "flex1500/iq.h"
 #include "flex1500/network.h"
@@ -37,14 +38,6 @@ static const flex1500_radio_info RADIO_INFO = {
     .rx_mode = "am",
     .rx_bandwidth_hz = 6000,
 };
-
-static uint32_t rx_mode_bandwidth(const char *mode)
-{
-    if (strcmp(mode, "fm") == 0) return 12000;
-    if (strcmp(mode, "usb") == 0 || strcmp(mode, "lsb") == 0) return 2700;
-    if (strcmp(mode, "cw") == 0) return 500;
-    return 6000;
-}
 
 typedef struct http_client_state {
     int fd;
@@ -171,10 +164,8 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
         .network_listening = true,
         .sample_rate = 48000,
     };
-    char json[4096];
-    char radio_json[512];
-    flex1500_build_status_json(&status, json, sizeof(json));
-    flex1500_build_radio_json(&RADIO_INFO, radio_json, sizeof(radio_json));
+    flex1500_api_controller api;
+    flex1500_api_controller_init(&api, false, false, test_page_enabled);
 
     while (!server_stop_requested) {
         struct pollfd poll_fd = {.fd = listener, .events = POLLIN};
@@ -196,16 +187,15 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
         }
         if (received > 0 &&
             flex1500_http_request_complete(request, (size_t)received)) {
-            if (test_page_enabled &&
-                strncmp(request, "GET /test HTTP/", 15) == 0) {
+            char response[4096];
+            size_t response_length = 0;
+            flex1500_api_action action = flex1500_api_dispatch(
+                &api, request, &status, &RADIO_INFO, response,
+                sizeof(response), &response_length, NULL, NULL);
+            if (action == FLEX1500_API_SERVE_TEST_PAGE) {
                 send_web_ui(client);
-            } else {
-                char response[4096];
-                size_t response_length = flex1500_build_http_response(
-                    request, json, radio_json, response, sizeof(response));
-                if (response_length > 0) {
-                    send_all(client, response, response_length);
-                }
+            } else if (response_length > 0) {
+                send_all(client, response, response_length);
             }
         }
         close(client);
@@ -232,6 +222,70 @@ static flex1500_publish_result write_socket(void *context,
         return FLEX1500_PUBLISH_DISCONNECTED;
     }
     return FLEX1500_PUBLISH_ERROR;
+}
+
+static int api_tune_rx(void *context, uint32_t frequency_hz,
+                       uint32_t *rx_filter)
+{
+    flex1500_usb_rx *receiver = context;
+    if (flex1500_usb_rx_tune(receiver, frequency_hz) != 0) return -1;
+    return flex1500_usb_rx_filter(receiver, rx_filter) ? 0 : -1;
+}
+
+static flex1500_service_status live_service_status(
+    const flex1500_usb_rx *receiver, const flex1500_iq_ring *ring,
+    const flex1500_iq_publisher *publisher)
+{
+    const flex1500_usb_rx_counters *usb =
+        flex1500_usb_rx_get_counters(receiver);
+    const flex1500_iq_stats *iq = flex1500_usb_rx_get_iq_stats(receiver);
+    return (flex1500_service_status){
+        .state = "receiving", .radio_open = true, .network_listening = true,
+        .sample_rate = 48000, .frames = iq->frames,
+        .sentinel_frames = iq->sentinel_frames, .usb_packets = usb->usb_packets,
+        .usb_packet_errors = usb->usb_packet_errors,
+        .ring_dropped_frames = ring->dropped,
+        .network_frames_sent = publisher->stats.frames_sent,
+        .network_samples_sent = publisher->stats.samples_sent,
+        .network_would_block_events = publisher->stats.would_block_events,
+        .network_disconnects = publisher->stats.disconnects,
+        .network_write_errors = publisher->stats.write_errors,
+        .rx_tune_operations = usb->rx_tune_operations,
+        .radio_command_errors = usb->command_errors,
+        .usb_transfer_status_errors = usb->transfer_status_errors,
+        .usb_transfer_timeouts = usb->transfer_timeouts,
+        .usb_transfer_stalls = usb->transfer_stalls,
+        .usb_transfer_no_device = usb->transfer_no_device,
+        .usb_transfer_overflows = usb->transfer_overflows,
+        .usb_transfer_other_errors = usb->transfer_other_errors,
+        .usb_packet_status_errors = usb->packet_status_errors,
+        .usb_packet_timeouts = usb->packet_timeouts,
+        .usb_packet_stalls = usb->packet_stalls,
+        .usb_packet_no_device = usb->packet_no_device,
+        .usb_packet_overflows = usb->packet_overflows,
+        .usb_packet_other_errors = usb->packet_other_errors,
+        .usb_short_packets = usb->short_packets,
+        .usb_zero_length_packets = usb->zero_length_packets,
+        .usb_oversized_packets = usb->oversized_packets,
+        .usb_missing_bytes = usb->missing_bytes,
+        .usb_trailing_bytes = usb->trailing_bytes,
+        .usb_error_events = usb->error_events,
+        .usb_first_error_ms = usb->first_error_ms,
+        .usb_last_error_ms = usb->last_error_ms,
+        .first_sentinel_frame = usb->first_sentinel_frame,
+        .last_sentinel_frame = usb->last_sentinel_frame,
+        .first_sentinel_ms = usb->first_sentinel_ms,
+        .last_sentinel_ms = usb->last_sentinel_ms,
+    };
+}
+
+static flex1500_radio_info live_radio_info(const flex1500_usb_rx *receiver)
+{
+    flex1500_radio_info radio = RADIO_INFO;
+    radio.frequency_known = flex1500_usb_rx_frequency(
+        receiver, &radio.frequency_hz);
+    radio.rx_filter_known = flex1500_usb_rx_filter(receiver, &radio.rx_filter);
+    return radio;
 }
 
 static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
@@ -284,8 +338,11 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
     fflush(stdout);
     int iq_client = -1;
     http_client_state http_client = {.fd = -1};
-    char radio_json[512];
-    const char *rx_mode = "am";
+    flex1500_api_controller api;
+    flex1500_api_controller_init(&api, rx_tuning_enabled, true,
+                                 test_page_enabled);
+    api.radio_context = receiver;
+    api.tune_rx = api_tune_rx;
 
     while (!server_stop_requested && flex1500_usb_rx_is_running(receiver)) {
         usb_result = flex1500_usb_rx_pump(receiver);
@@ -323,93 +380,34 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                                                 http_client.length);
             bool complete = flex1500_http_request_complete(
                 http_client.request, http_client.length);
-            uint32_t requested_frequency = 0;
-            bool frequency_request = complete &&
-                flex1500_parse_rx_frequency_request(
-                    http_client.request, &requested_frequency);
-            bool frequency_path = complete && strncmp(
-                http_client.request, "PUT /v1/radio/frequency/", 24) == 0;
-            const char *requested_mode = NULL;
-            bool mode_request = complete && flex1500_parse_rx_mode_request(
-                http_client.request, &requested_mode);
-            bool mode_path = complete && strncmp(
-                http_client.request, "PUT /v1/radio/mode/", 19) == 0;
-            if (frequency_request && rx_tuning_enabled) {
-                uint32_t mapped_filter = 0;
-                bool frequency_valid = flex1500_rx_filter_for_frequency(
-                    requested_frequency, &mapped_filter);
-                int tune_result = frequency_valid ? flex1500_usb_rx_tune(
-                    receiver, requested_frequency) : -1;
-                uint32_t filter = 0;
-                bool filter_known = flex1500_usb_rx_filter(receiver, &filter);
-                char body[256];
-                char response[768];
-                const char *status_line = tune_result == 0 ? "200 OK" :
-                    (!frequency_valid ? "400 Bad Request" :
-                     "500 Internal Server Error");
-                if (tune_result == 0 && filter_known) {
+            if (complete) {
+                flex1500_service_status status = live_service_status(
+                    receiver, &ring, &publisher);
+                flex1500_radio_info radio = live_radio_info(receiver);
+                char response[4096];
+                size_t response_length = 0;
+                uint32_t tuned_frequency = 0;
+                uint32_t tuned_filter = 0;
+                flex1500_api_action action = flex1500_api_dispatch(
+                    &api, http_client.request, &status, &radio, response,
+                    sizeof(response), &response_length, &tuned_frequency,
+                    &tuned_filter);
+                if (action == FLEX1500_API_TUNED_RX) {
                     if (iq_client >= 0) {
                         close(iq_client);
                         iq_client = -1;
                         flex1500_iq_publisher_disconnect(&publisher);
                         printf("[stream] IQ client closed for RX retune\n");
                     }
-                    snprintf(body, sizeof(body),
-                             "{\"frequency_hz\":%u,\"rx_filter\":%u}\n",
-                             requested_frequency, filter);
                     printf("[radio] tuned RX to %u Hz; RX filter %u selected\n",
-                           requested_frequency, filter);
-                } else {
-                    snprintf(body, sizeof(body),
-                             "{\"error\":\"RX tune failed\"}\n");
-                    fprintf(stderr,
-                            "[error] RX tune to %u Hz failed: %s\n",
-                            requested_frequency,
+                           tuned_frequency, tuned_filter);
+                    send_all(http_client.fd, response, response_length);
+                    fflush(stdout);
+                } else if (action == FLEX1500_API_RX_TUNE_FAILED) {
+                    send_all(http_client.fd, response, response_length);
+                    fprintf(stderr, "[error] RX tune failed: %s\n",
                             flex1500_usb_rx_last_error(receiver));
-                }
-                fflush(stdout);
-                int response_length = snprintf(
-                    response, sizeof(response),
-                    "HTTP/1.1 %s\r\nContent-Type: application/json\r\n"
-                    "Content-Length: %zu\r\nConnection: close\r\n"
-                    "Cache-Control: no-store\r\n\r\n%s",
-                    status_line, strlen(body), body);
-                if (response_length > 0 &&
-                    (size_t)response_length < sizeof(response)) {
-                    send_all(http_client.fd, response,
-                             (size_t)response_length);
-                }
-            } else if (mode_request) {
-                rx_mode = requested_mode;
-                char body[64];
-                char response[384];
-                uint32_t bandwidth = rx_mode_bandwidth(rx_mode);
-                snprintf(body, sizeof(body),
-                         "{\"rx_mode\":\"%s\",\"rx_bandwidth_hz\":%u}\n",
-                         rx_mode, bandwidth);
-                int response_length = snprintf(
-                    response, sizeof(response),
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                    "Content-Length: %zu\r\nConnection: close\r\n"
-                    "Cache-Control: no-store\r\n\r\n%s",
-                    strlen(body), body);
-                if (response_length > 0 &&
-                    (size_t)response_length < sizeof(response)) {
-                    send_all(http_client.fd, response, (size_t)response_length);
-                }
-                printf("[dsp] receive mode changed to %s; bandwidth %u Hz (host demodulation)\n",
-                       rx_mode, bandwidth);
-                fflush(stdout);
-            } else if (frequency_path || mode_path) {
-                static const char rejected[] =
-                    "HTTP/1.1 404 Not Found\r\n"
-                    "Content-Type: application/json\r\n"
-                    "Content-Length: 22\r\nConnection: close\r\n"
-                    "Cache-Control: no-store\r\n\r\n"
-                    "{\"error\":\"not found\"}\n";
-                send_all(http_client.fd, rejected, sizeof(rejected) - 1);
-            } else if (complete &&
-                strncmp(http_client.request, "GET /v1/stream/iq ", 18) == 0) {
+                } else if (action == FLEX1500_API_OPEN_IQ_STREAM) {
                 static const char stream_header[] =
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/octet-stream\r\n"
@@ -423,76 +421,20 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                     printf("[stream] IQ client connected\n");
                     fflush(stdout);
                 }
-            } else if (complete && test_page_enabled &&
-                       strncmp(http_client.request, "GET /test HTTP/", 15) == 0) {
-                send_web_ui(http_client.fd);
-                printf("[http] served receive test page\n");
-                fflush(stdout);
-            } else if (complete) {
-                const flex1500_usb_rx_counters *usb =
-                    flex1500_usb_rx_get_counters(receiver);
-                const flex1500_iq_stats *iq =
-                    flex1500_usb_rx_get_iq_stats(receiver);
-                flex1500_service_status status = {
-                    .state = "receiving",
-                    .radio_open = true,
-                    .network_listening = true,
-                    .sample_rate = 48000,
-                    .frames = iq->frames,
-                    .sentinel_frames = iq->sentinel_frames,
-                    .usb_packets = usb->usb_packets,
-                    .usb_packet_errors = usb->usb_packet_errors,
-                    .ring_dropped_frames = ring.dropped,
-                    .network_frames_sent = publisher.stats.frames_sent,
-                    .network_samples_sent = publisher.stats.samples_sent,
-                    .network_would_block_events =
-                        publisher.stats.would_block_events,
-                    .network_disconnects = publisher.stats.disconnects,
-                    .network_write_errors = publisher.stats.write_errors,
-                    .rx_tune_operations = usb->rx_tune_operations,
-                    .radio_command_errors = usb->command_errors,
-                    .usb_transfer_status_errors = usb->transfer_status_errors,
-                    .usb_transfer_timeouts = usb->transfer_timeouts,
-                    .usb_transfer_stalls = usb->transfer_stalls,
-                    .usb_transfer_no_device = usb->transfer_no_device,
-                    .usb_transfer_overflows = usb->transfer_overflows,
-                    .usb_transfer_other_errors = usb->transfer_other_errors,
-                    .usb_packet_status_errors = usb->packet_status_errors,
-                    .usb_packet_timeouts = usb->packet_timeouts,
-                    .usb_packet_stalls = usb->packet_stalls,
-                    .usb_packet_no_device = usb->packet_no_device,
-                    .usb_packet_overflows = usb->packet_overflows,
-                    .usb_packet_other_errors = usb->packet_other_errors,
-                    .usb_short_packets = usb->short_packets,
-                    .usb_zero_length_packets = usb->zero_length_packets,
-                    .usb_oversized_packets = usb->oversized_packets,
-                    .usb_missing_bytes = usb->missing_bytes,
-                    .usb_trailing_bytes = usb->trailing_bytes,
-                    .usb_error_events = usb->error_events,
-                    .usb_first_error_ms = usb->first_error_ms,
-                    .usb_last_error_ms = usb->last_error_ms,
-                    .first_sentinel_frame = usb->first_sentinel_frame,
-                    .last_sentinel_frame = usb->last_sentinel_frame,
-                    .first_sentinel_ms = usb->first_sentinel_ms,
-                    .last_sentinel_ms = usb->last_sentinel_ms,
-                };
-                char json[4096];
-                char response[4096];
-                flex1500_radio_info radio = RADIO_INFO;
-                radio.rx_tuning_enabled = rx_tuning_enabled;
-                radio.frequency_known = flex1500_usb_rx_frequency(
-                    receiver, &radio.frequency_hz);
-                radio.rx_filter_known = flex1500_usb_rx_filter(
-                    receiver, &radio.rx_filter);
-                radio.rx_mode = rx_mode;
-                radio.rx_bandwidth_hz = rx_mode_bandwidth(rx_mode);
-                flex1500_build_status_json(&status, json, sizeof(json));
-                flex1500_build_radio_json(
-                    &radio, radio_json, sizeof(radio_json));
-                size_t length = flex1500_build_http_response(
-                    http_client.request, json, radio_json, response,
-                    sizeof(response));
-                if (length > 0) send_all(http_client.fd, response, length);
+                } else if (action == FLEX1500_API_SERVE_TEST_PAGE) {
+                    send_web_ui(http_client.fd);
+                    printf("[http] served receive test page\n");
+                    fflush(stdout);
+                } else if (response_length > 0) {
+                    send_all(http_client.fd, response, response_length);
+                    if (strncmp(http_client.request,
+                                "PUT /v1/radio/mode/", 19) == 0 &&
+                        strstr(response, "200 OK") != NULL) {
+                        printf("[dsp] receive mode changed to %s; bandwidth %u Hz (host demodulation)\n",
+                               api.rx_mode, flex1500_api_rx_bandwidth(&api));
+                        fflush(stdout);
+                    }
+                }
             }
             if (http_client.fd >= 0 &&
                 (complete || disconnected || overflow)) {

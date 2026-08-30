@@ -133,9 +133,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The clean default configuration currently runs 18 offline tests. Building and
+The clean default configuration currently runs 19 offline tests. Building and
 testing does not enumerate, open, initialize, tune, or otherwise access the
-radio. An explicit daemon-only build runs the original 17-test set.
+radio. An explicit daemon-only build runs an 18-test set.
 
 The standard build produces both the API daemon and the receive-only
 `flex1500Support` module. It runs an eighteenth test against a synthetic

@@ -6,7 +6,7 @@ The HTTP-facing policy is implemented by the radio-independent API controller
 in `src/api.c`. It owns route dispatch, receive-mode state, capability gates,
 and HTTP/JSON responses. It has no libusb or socket dependency.
 
-The daemon in `src/flex1500d.c` owns loopback sockets, IQ-client lifetime, and
+The daemon in `src/flex1500d.c` owns LAN sockets, IQ-client lifetime, and
 live status snapshots. Live RX supplies the controller one narrow callback for
 an approved receive-frequency operation; the callback is the only connection
 from API policy to the concrete USB RX backend. The offline server supplies no
@@ -137,7 +137,8 @@ The reusable continuous libusb RX producer is now implemented as
 - Creating, inspecting, and destroying an unstarted receiver is offline.
 - `flex1500_usb_rx_start()` is the permission-gated live boundary. It opens only
   `2192:1502`, claims interface 3, sends the fixed opcode-1219 `INITIALIZE`
-  packet, and queues eight endpoint-`0x82` IN transfers.
+  packet, queues eight endpoint-`0x82` IN transfers, and queues one continuous
+  interrupt-IN listener on endpoint `0x83`.
 - Each transfer contains 64 packets. Completed packets are decoded, DC-corrected,
   and pushed into the destination ring before the transfer is resubmitted.
 - Packet errors, bytes, resubmissions, submission failures, IQ statistics, ring
@@ -145,8 +146,21 @@ The reusable continuous libusb RX producer is now implemented as
 - Stop cancels pending host-side IN transfers, drains callbacks, releases the
   interface, and closes libusb.
 
+Endpoint `0x83` is decoded as active-low physical mic PTT, FlexWire PTT, dash,
+and dot inputs. The backend stores the latest state and counts packets, changes,
+and errors. The daemon logs transitions and exposes them through
+`GET /v1/radio`. In RX-only mode they remain observational. In explicitly
+enabled TX mode, changed microphone-PTT edges enter the exclusive physical-mic
+state machine after startup, mode, and frequency interlocks pass; FlexWire,
+dash, and dot remain observational.
+
+The live daemon test on September 1, 2026 observed mic PTT press as raw `0x38`
+and release as raw `0x39`. The API subsequently reported known, released state
+for all four inputs, `transmit_enabled` remained false, and shutdown completed
+normally without keying the radio.
+
 The live start API is wired only to `--serve-live-rx PORT --initialize-radio`.
-It binds to loopback, opens the radio, sends the one fixed initialization
+It listens on all IPv4 interfaces, opens the radio, sends the fixed initialization
 packet, and services continuous IN transfers. `SIGINT` and `SIGTERM` cancel the
 host transfers and release the USB interface.
 
@@ -169,19 +183,17 @@ tuning, LAN binding with an explicit access policy, a compatibility adapter,
 and live demodulated-audio streaming. Each radio-state-changing integration or
 live validation remains subject to KB1JDX's explicit permission.
 
-## Shelved transmit boundary
+## Transmit boundary
 
-Native Linux TX switching and a fixed two-tone waveform have been demonstrated
-successfully into a dummy load, but TX is intentionally shelved. The daemon
-contains no TX sample producer, PTT/MOX route, transmit state, or reference to
-the probe arming tokens. Shared protocol code contains the packet builders used
-by the standalone probes, but `flex1500d` has no path that calls them.
-`/v1/radio` reports `receive_only: true` and
-`transmit_enabled: false`; plausible TX/PTT routes return 404.
+Native Linux TX switching, fixed test waveforms, and the PowerSDR-compatible
+Tune carrier have been demonstrated successfully. The basic and RX-tuning
+daemon modes remain receive-only. The distinct transmit-enabled mode prepares
+the TX amplifier path, tracks the PA filter after a frequency becomes known,
+exposes the fixed Tune carrier, and connects physical microphone PTT to live
+USB/LSB modulation through the shared TX controller. Arbitrary network TX
+samples, HTTP PTT, and SoapySDR TX remain unavailable.
 
-The guarded TX probes remain research/validation tools only. They will not be
-converted into daemon functions or network controls during receive-side work.
-They are excluded from the default build and require the explicit
-`FLEX1500_BUILD_TX_RESEARCH=ON` CMake option. That option only creates separate
-research executables; it does not compile a transmit path into `flex1500d`, add
-an API route, or change `transmit_enabled: false`.
+The guarded TX probes remain research/validation tools and are included in the
+standard build. `FLEX1500_BUILD_TX_RESEARCH=OFF` omits those standalone
+executables without changing daemon capabilities. Probe execution remains
+separately armed and entirely at the operator's own risk.

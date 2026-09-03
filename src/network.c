@@ -72,6 +72,9 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         "  \"usb_missing_bytes\": %llu,\n"
         "  \"usb_trailing_bytes\": %llu,\n"
         "  \"usb_error_events\": %llu,\n"
+        "  \"physical_status_packets\": %llu,\n"
+        "  \"physical_status_changes\": %llu,\n"
+        "  \"physical_status_errors\": %llu,\n"
         "  \"usb_first_error_ms\": %llu,\n"
         "  \"usb_last_error_ms\": %llu,\n"
         "  \"first_sentinel_frame\": %llu,\n"
@@ -79,7 +82,15 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         "  \"first_sentinel_ms\": %llu,\n"
         "  \"last_sentinel_ms\": %llu,\n"
         "  \"rx_recovery_attempts\": %llu,\n"
-        "  \"rx_recovery_successes\": %llu\n"
+        "  \"rx_recovery_successes\": %llu,\n"
+        "  \"tx_starts\": %llu,\n"
+        "  \"tx_stops\": %llu,\n"
+        "  \"tx_underruns\": %llu,\n"
+        "  \"tx_clipped_frames\": %llu,\n"
+        "  \"tx_dropped_microphone_frames\": %llu,\n"
+        "  \"tx_rejected_ownership_requests\": %llu,\n"
+        "  \"tx_watchdog_stops\": %llu,\n"
+        "  \"tx_cleanup_failures\": %llu\n"
         "}\n",
         status->state, status->radio_open ? "true" : "false",
         status->network_listening ? "true" : "false", status->sample_rate,
@@ -113,6 +124,9 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         (unsigned long long)status->usb_missing_bytes,
         (unsigned long long)status->usb_trailing_bytes,
         (unsigned long long)status->usb_error_events,
+        (unsigned long long)status->physical_status_packets,
+        (unsigned long long)status->physical_status_changes,
+        (unsigned long long)status->physical_status_errors,
         (unsigned long long)status->usb_first_error_ms,
         (unsigned long long)status->usb_last_error_ms,
         (unsigned long long)status->first_sentinel_frame,
@@ -120,7 +134,15 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         (unsigned long long)status->first_sentinel_ms,
         (unsigned long long)status->last_sentinel_ms,
         (unsigned long long)status->rx_recovery_attempts,
-        (unsigned long long)status->rx_recovery_successes);
+        (unsigned long long)status->rx_recovery_successes,
+        (unsigned long long)status->tx_starts,
+        (unsigned long long)status->tx_stops,
+        (unsigned long long)status->tx_underruns,
+        (unsigned long long)status->tx_clipped_frames,
+        (unsigned long long)status->tx_dropped_microphone_frames,
+        (unsigned long long)status->tx_rejected_ownership_requests,
+        (unsigned long long)status->tx_watchdog_stops,
+        (unsigned long long)status->tx_cleanup_failures);
     if (written < 0 || (size_t)written >= capacity) return 0;
     return (size_t)written;
 }
@@ -130,6 +152,7 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
 {
     char frequency[32];
     char filter[32];
+    char pa_filter[32];
     char gain[32];
     if (radio->frequency_known) {
         snprintf(frequency, sizeof(frequency), "%u", radio->frequency_hz);
@@ -140,6 +163,11 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
         snprintf(filter, sizeof(filter), "%u", radio->rx_filter);
     } else {
         snprintf(filter, sizeof(filter), "null");
+    }
+    if (radio->pa_filter_known) {
+        snprintf(pa_filter, sizeof(pa_filter), "%u", radio->pa_filter);
+    } else {
+        snprintf(pa_filter, sizeof(pa_filter), "null");
     }
     if (radio->rx_gain_known) snprintf(gain, sizeof(gain), "%d", radio->rx_gain_db);
     else snprintf(gain, sizeof(gain), "null");
@@ -152,20 +180,44 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
         "  \"usb_product_id\": \"%04x\",\n"
         "  \"receive_only\": %s,\n"
         "  \"transmit_enabled\": %s,\n"
+        "  \"transmit_prepared\": %s,\n"
+        "  \"tune_enabled\": %s,\n"
+        "  \"tune_active\": %s,\n"
+        "  \"tx_timeout_seconds\": %u,\n"
+        "  \"tx_drive_percent\": %u,\n"
+        "  \"tx_microphone_gain_db\": %u,\n"
+        "  \"pa_filter\": %s,\n"
         "  \"rx_tuning_enabled\": %s,\n"
         "  \"frequency_hz\": %s,\n"
         "  \"rx_filter\": %s,\n"
         "  \"rx_gain_db\": %s,\n"
         "  \"rx_mode\": \"%s\",\n"
         "  \"rx_bandwidth_hz\": %u,\n"
-        "  \"rx_squelch_db\": %d\n"
+        "  \"rx_squelch_db\": %d,\n"
+        "  \"physical_inputs_known\": %s,\n"
+        "  \"mic_ptt\": %s,\n"
+        "  \"flexwire_ptt\": %s,\n"
+        "  \"dash\": %s,\n"
+        "  \"dot\": %s\n"
         "}\n",
         radio->model, radio->firmware, radio->usb_vendor_id,
         radio->usb_product_id, radio->receive_only ? "true" : "false",
         radio->transmit_enabled ? "true" : "false",
+        radio->transmit_prepared ? "true" : "false",
+        radio->tune_enabled ? "true" : "false",
+        radio->tune_active ? "true" : "false",
+        radio->tx_timeout_seconds,
+        radio->tx_drive_percent,
+        radio->tx_microphone_gain_db,
+        pa_filter,
         radio->rx_tuning_enabled ? "true" : "false", frequency, filter, gain,
         radio->rx_mode != NULL ? radio->rx_mode : "am",
-        radio->rx_bandwidth_hz, radio->rx_squelch_db);
+        radio->rx_bandwidth_hz, radio->rx_squelch_db,
+        radio->physical_inputs_known ? "true" : "false",
+        radio->mic_ptt ? "true" : "false",
+        radio->flexwire_ptt ? "true" : "false",
+        radio->dash ? "true" : "false",
+        radio->dot ? "true" : "false");
     if (written < 0 || (size_t)written >= capacity) return 0;
     return (size_t)written;
 }

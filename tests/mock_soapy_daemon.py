@@ -17,8 +17,8 @@ import threading
 
 RADIO = b'''{
   "model": "FLEX-1500",
-  "receive_only": true,
-  "transmit_enabled": false,
+  "receive_only": false,
+  "transmit_enabled": true,
   "rx_tuning_enabled": true,
   "frequency_hz": 7000000
   ,"rx_gain_db": 20

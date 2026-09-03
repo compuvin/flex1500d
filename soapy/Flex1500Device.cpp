@@ -241,9 +241,8 @@ public:
         const HttpResponse radio = request(host_, port_, "GET", "/v1/radio");
         if (radio.status != 200)
             throw std::runtime_error("flex1500: daemon radio endpoint unavailable");
-        if (!jsonBool(radio.body, "receive_only", false) ||
-            jsonBool(radio.body, "transmit_enabled", true))
-            throw std::runtime_error("flex1500: daemon safety contract mismatch");
+        daemonTransmitEnabled_ = jsonBool(
+            radio.body, "transmit_enabled", false);
         tuningEnabled_ = jsonBool(radio.body, "rx_tuning_enabled", false);
         frequency_ = jsonNumber(radio.body, "frequency_hz", 0.0);
         gain_ = jsonNumber(radio.body, "rx_gain_db", 20.0);
@@ -257,7 +256,10 @@ public:
     SoapySDR::Kwargs getHardwareInfo() const override
     {
         return {{"daemon", host_ + ":" + std::to_string(port_)},
-                {"receive_only", "true"}, {"transport", "flex1500d API v1"}};
+                {"receive_only", "true"},
+                {"daemon_transmit_enabled",
+                 daemonTransmitEnabled_ ? "true" : "false"},
+                {"transport", "flex1500d API v1"}};
     }
     size_t getNumChannels(int direction) const override
     {
@@ -592,6 +594,7 @@ private:
     std::string host_;
     uint16_t port_;
     bool tuningEnabled_ = false;
+    bool daemonTransmitEnabled_ = false;
     double frequency_ = 0.0;
     double gain_ = 20.0;
     double bandwidth_ = 6000.0;

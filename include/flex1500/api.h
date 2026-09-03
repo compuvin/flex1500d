@@ -4,6 +4,7 @@
 #define FLEX1500_API_H
 
 #include "flex1500/network.h"
+#include "flex1500/tune_control.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,9 +20,14 @@ typedef struct flex1500_api_controller {
     const char *rx_mode;
     uint32_t rx_bandwidth_hz;
     int32_t rx_squelch_db;
+    uint32_t tx_drive_percent;
+    uint32_t tx_microphone_gain_db;
     void *radio_context;
     flex1500_api_tune_rx tune_rx;
     flex1500_api_set_rx_gain set_rx_gain;
+    flex1500_tune_control *tune_control;
+    uint64_t request_now_ms;
+    uint64_t next_tune_lease;
 } flex1500_api_controller;
 
 typedef enum flex1500_api_action {

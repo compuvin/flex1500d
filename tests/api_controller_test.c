@@ -12,6 +12,8 @@ typedef struct fake_radio {
     uint32_t frequency;
     int32_t gain_db;
     int result;
+    unsigned tune_starts;
+    unsigned tune_stops;
 } fake_radio;
 
 static int tune_rx(void *context, uint32_t frequency, uint32_t *filter)
@@ -30,6 +32,22 @@ static int set_gain(void *context, int32_t gain_db)
     ++radio->calls;
     radio->gain_db = gain_db;
     return radio->result;
+}
+
+static int start_tune(void *context, flex1500_tx_owner owner)
+{
+    fake_radio *radio = context;
+    CHECK(owner == FLEX1500_TX_OWNER_TUNE);
+    ++radio->tune_starts;
+    return radio->result;
+}
+
+static int stop_tune(void *context, flex1500_tx_owner owner)
+{
+    fake_radio *radio = context;
+    CHECK(owner == FLEX1500_TX_OWNER_TUNE);
+    ++radio->tune_stops;
+    return 0;
 }
 
 static flex1500_api_action dispatch(
@@ -113,6 +131,77 @@ int main(void)
     CHECK(dispatch(&api, "POST /v1/radio/ptt HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
     CHECK(strstr(response, "404 Not Found") != NULL);
+
+    flex1500_tune_control tune;
+    flex1500_tx_control tx_control;
+    flex1500_tx_control_init(&tx_control, true, 120000, &radio, start_tune,
+                             stop_tune);
+    flex1500_tune_control_init(&tune, true, &tx_control);
+    api.tune_control = &tune;
+    api.request_now_ms = 1000;
+    api.next_tune_lease = 42;
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tx-timeout/180 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL);
+    CHECK(strstr(response, "\"tx_timeout_seconds\":180") != NULL);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tx-timeout/0 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "400 Bad Request") != NULL);
+    CHECK(dispatch(&api, "PUT /v1/radio/tune/start HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL);
+    CHECK(strstr(response, "\"lease\":42") != NULL);
+    CHECK(strstr(response, "\"lease_timeout_ms\":15000") != NULL);
+    CHECK(radio.tune_starts == 1 && tune.active);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/frequency/7200000 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "409 Conflict") != NULL);
+    CHECK(dispatch(&api, "PUT /v1/radio/mode/lsb HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "409 Conflict") != NULL);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tx-drive/75 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "409 Conflict") != NULL);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tx-timeout/300 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "409 Conflict") != NULL);
+    api.request_now_ms = 11000;
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tune/keepalive/42 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL && tune.active);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tune/stop/41 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "403 Forbidden") != NULL && tune.active);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tune/stop/42 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL && !tune.active);
+    CHECK(radio.tune_stops == 1);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tx-drive/75 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "\"tx_drive_percent\":75") != NULL);
+    CHECK(api.tx_drive_percent == 75);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/mic-gain/10 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "\"tx_microphone_gain_db\":10") != NULL);
+    CHECK(api.tx_microphone_gain_db == 10);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/mic-gain/71 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "400 Bad Request") != NULL);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tx-drive/101 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "400 Bad Request") != NULL);
 
     flex1500_api_controller_init(&api, false, false, false);
     api.radio_context = &radio;

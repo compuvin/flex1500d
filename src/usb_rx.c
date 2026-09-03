@@ -5,9 +5,11 @@
 #include "flex1500/usb_rx.h"
 
 #include "flex1500/protocol.h"
+#include "flex1500/tx_lifecycle.h"
 
 #include <libusb.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +23,17 @@ enum {
     RX_TRANSFER_TIMEOUT_MS = 1000,
     RX_FRAMES_PER_PACKET = FLEX1500_SAMPLE_PACKET_SIZE / 4,
     INITIALIZE_INDEX = 3,
+    TUNE_TRANSFER_COUNT = 8,
+    TUNE_PACKETS_PER_TRANSFER = 50,
+    TUNE_TRANSFER_BYTES =
+        TUNE_PACKETS_PER_TRANSFER * FLEX1500_SAMPLE_PACKET_SIZE,
+    TUNE_TRANSITION_MS = 200,
+    TUNE_PRE_ROLL_MS = 250,
 };
+
+#define TUNE_TONE_HZ 600.0
+#define TUNE_SAMPLE_RATE_HZ 48000.0
+#define TUNE_MAGNITUDE 24890.0
 
 typedef struct rx_slot {
     struct flex1500_usb_rx *receiver;
@@ -30,18 +42,47 @@ typedef struct rx_slot {
     bool submitted;
 } rx_slot;
 
+typedef struct tune_slot {
+    struct flex1500_usb_rx *receiver;
+    struct libusb_transfer *transfer;
+    uint8_t *buffer;
+    bool submitted;
+} tune_slot;
+
 struct flex1500_usb_rx {
     libusb_context *context;
     libusb_device_handle *handle;
     flex1500_iq_ring *destination;
     rx_slot slots[RX_TRANSFER_COUNT];
+    tune_slot tune_slots[TUNE_TRANSFER_COUNT];
+    struct libusb_transfer *status_transfer;
+    uint8_t status_buffer[FLEX1500_STATUS_PACKET_SIZE];
+    bool status_submitted;
+    bool physical_inputs_known;
+    flex1500_physical_inputs physical_inputs;
     flex1500_iq_stats iq_stats;
     flex1500_dc_blocker dc_blocker;
     flex1500_usb_rx_counters counters;
     unsigned int active_transfers;
+    unsigned int active_tune_transfers;
     bool interface_claimed;
     bool running;
     bool stopping;
+    bool tune_streaming;
+    bool tune_prepared;
+    bool tune_active;
+    bool tune_keyed;
+    bool tune_key_attempted;
+    bool tune_transition_attempted;
+    bool tune_frequency_attempted;
+    bool microphone_streaming;
+    bool microphone_capture_enabled;
+    flex1500_tx_audio_stream microphone_stream;
+    flex1500_tx_fault_stage tx_fault_stage;
+    bool transmit_prepared;
+    bool amp_enable_attempted;
+    bool pa_filter_known;
+    uint32_t pa_filter;
     bool frequency_known;
     bool filter_known;
     uint32_t frequency_hz;
@@ -54,6 +95,43 @@ struct flex1500_usb_rx {
     unsigned int consecutive_transfer_failures;
     char last_error[160];
 };
+
+static bool tx_stream_present(const flex1500_usb_rx *receiver)
+{
+    if (receiver->tune_streaming || receiver->active_tune_transfers > 0) {
+        return true;
+    }
+    for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
+        const tune_slot *slot = &receiver->tune_slots[index];
+        if (slot->transfer != NULL || slot->buffer != NULL || slot->submitted) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint32_t tx_partial_state(const flex1500_usb_rx *receiver)
+{
+    uint32_t state = FLEX1500_TX_PARTIAL_NONE;
+    if (receiver->pa_filter_known) state |= FLEX1500_TX_PARTIAL_PA_SELECTED;
+    if (receiver->amp_enable_attempted || receiver->transmit_prepared) {
+        state |= FLEX1500_TX_PARTIAL_AMP_ENABLE_ATTEMPTED;
+    }
+    if (tx_stream_present(receiver)) {
+        state |= FLEX1500_TX_PARTIAL_STREAM_STARTED;
+    }
+    if (receiver->tune_transition_attempted) {
+        state |= FLEX1500_TX_PARTIAL_TRANSITION_ATTEMPTED;
+    }
+    if (receiver->tune_frequency_attempted) {
+        state |= FLEX1500_TX_PARTIAL_FREQUENCY_ATTEMPTED;
+    }
+    if (receiver->tune_key_attempted || receiver->tune_keyed ||
+        receiver->tune_active) {
+        state |= FLEX1500_TX_PARTIAL_KEY_ATTEMPTED;
+    }
+    return state;
+}
 
 static uint64_t monotonic_ms(void)
 {
@@ -117,6 +195,14 @@ static void set_libusb_error(flex1500_usb_rx *receiver, const char *operation,
 static void process_packet(flex1500_usb_rx *receiver, const uint8_t *data,
                            unsigned int length)
 {
+    if (receiver->microphone_streaming) {
+        if (receiver->microphone_capture_enabled) {
+            (void)flex1500_tx_audio_stream_push_iq16le(
+                &receiver->microphone_stream, data, length);
+        }
+        /* Endpoint 0x82 carries microphone input in TX, not receive I/Q. */
+        return;
+    }
     uint64_t base_frame = receiver->iq_stats.frames;
     for (unsigned int offset = 0; offset + 3 < length; offset += 4) {
         int16_t sample_i;
@@ -215,6 +301,91 @@ static void rx_complete(struct libusb_transfer *transfer)
     }
 }
 
+static int submit_status(flex1500_usb_rx *receiver)
+{
+    int result = libusb_submit_transfer(receiver->status_transfer);
+    if (result != LIBUSB_SUCCESS) {
+        ++receiver->counters.status_errors;
+        set_libusb_error(receiver, "submit endpoint-0x83 status transfer",
+                         result);
+        receiver->running = false;
+        return result;
+    }
+    receiver->status_submitted = true;
+    ++receiver->active_transfers;
+    return LIBUSB_SUCCESS;
+}
+
+static void status_complete(struct libusb_transfer *transfer)
+{
+    flex1500_usb_rx *receiver = transfer->user_data;
+    receiver->status_submitted = false;
+    if (receiver->active_transfers > 0) --receiver->active_transfers;
+
+    if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
+        flex1500_physical_inputs inputs;
+        ++receiver->counters.status_packets;
+        if (flex1500_decode_physical_inputs(
+                transfer->buffer, (size_t)transfer->actual_length, &inputs)) {
+            if (!receiver->physical_inputs_known ||
+                !flex1500_physical_inputs_equal(
+                    &receiver->physical_inputs, &inputs)) {
+                ++receiver->counters.status_changes;
+            }
+            receiver->physical_inputs = inputs;
+            receiver->physical_inputs_known = true;
+        } else {
+            ++receiver->counters.status_errors;
+        }
+    } else if (transfer->status != LIBUSB_TRANSFER_CANCELLED) {
+        ++receiver->counters.status_errors;
+        if (transfer->status == LIBUSB_TRANSFER_NO_DEVICE) {
+            set_error(receiver, "endpoint-0x83 status listener lost device");
+            receiver->running = false;
+        }
+    }
+
+    if (!receiver->stopping && receiver->running) {
+        (void)submit_status(receiver);
+    }
+}
+
+static void tune_complete(struct libusb_transfer *transfer)
+{
+    tune_slot *slot = transfer->user_data;
+    flex1500_usb_rx *receiver = slot->receiver;
+    slot->submitted = false;
+    if (receiver->active_tune_transfers > 0) {
+        --receiver->active_tune_transfers;
+    }
+
+    if (transfer->status != LIBUSB_TRANSFER_COMPLETED &&
+        transfer->status != LIBUSB_TRANSFER_CANCELLED) {
+        set_error(receiver, "Tune endpoint-0x01 stream failed");
+        receiver->tune_streaming = false;
+        receiver->running = false;
+    }
+    if (receiver->tune_streaming && receiver->running) {
+        if (receiver->microphone_streaming &&
+            receiver->microphone_capture_enabled) {
+            (void)flex1500_tx_audio_stream_render_iq16le(
+                &receiver->microphone_stream, transfer->buffer,
+                (size_t)transfer->length / 4);
+        } else if (receiver->microphone_streaming) {
+            memset(transfer->buffer, 0, (size_t)transfer->length);
+        }
+        int result = libusb_submit_transfer(transfer);
+        if (result == LIBUSB_SUCCESS) {
+            slot->submitted = true;
+            ++receiver->active_tune_transfers;
+        } else {
+            set_libusb_error(receiver, "resubmit Tune endpoint-0x01", result);
+            receiver->tune_streaming = false;
+            receiver->running = false;
+        }
+    }
+}
+
 flex1500_usb_rx *flex1500_usb_rx_create(flex1500_iq_ring *destination)
 {
     if (destination == NULL || destination->samples == NULL) return NULL;
@@ -235,11 +406,34 @@ static void free_slots(flex1500_usb_rx *receiver)
         free(receiver->slots[index].buffer);
         memset(&receiver->slots[index], 0, sizeof(receiver->slots[index]));
     }
+    for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
+        if (receiver->tune_slots[index].transfer != NULL) {
+            libusb_free_transfer(receiver->tune_slots[index].transfer);
+        }
+        free(receiver->tune_slots[index].buffer);
+        memset(&receiver->tune_slots[index], 0,
+               sizeof(receiver->tune_slots[index]));
+    }
+    if (receiver->status_transfer != NULL) {
+        libusb_free_transfer(receiver->status_transfer);
+        receiver->status_transfer = NULL;
+    }
 }
 
 void flex1500_usb_rx_stop(flex1500_usb_rx *receiver)
 {
     if (receiver == NULL) return;
+    uint32_t cleanup = flex1500_tx_cleanup_plan(tx_partial_state(receiver));
+    if (receiver->tune_prepared ||
+        (cleanup & (FLEX1500_TX_CLEANUP_UNKEY |
+                    FLEX1500_TX_CLEANUP_RESTORE_RX_FREQUENCY |
+                    FLEX1500_TX_CLEANUP_STOP_STREAM)) != 0) {
+        (void)flex1500_usb_rx_tune_carrier_stop(receiver);
+    }
+    if (receiver->transmit_prepared || receiver->amp_enable_attempted ||
+        receiver->pa_filter_known) {
+        (void)flex1500_usb_rx_disable_transmit_preparation(receiver);
+    }
     receiver->stopping = true;
     receiver->running = false;
 
@@ -247,6 +441,9 @@ void flex1500_usb_rx_stop(flex1500_usb_rx *receiver)
         if (receiver->slots[index].submitted) {
             libusb_cancel_transfer(receiver->slots[index].transfer);
         }
+    }
+    if (receiver->status_submitted) {
+        libusb_cancel_transfer(receiver->status_transfer);
     }
     while (receiver->context != NULL && receiver->active_transfers > 0) {
         int result = libusb_handle_events(receiver->context);
@@ -267,10 +464,18 @@ void flex1500_usb_rx_stop(flex1500_usb_rx *receiver)
         receiver->context = NULL;
     }
     receiver->active_transfers = 0;
+    receiver->active_tune_transfers = 0;
     receiver->stopping = false;
     receiver->frequency_known = false;
     receiver->filter_known = false;
     receiver->sentinel_seen = false;
+    receiver->physical_inputs_known = false;
+    receiver->transmit_prepared = false;
+    receiver->amp_enable_attempted = false;
+    receiver->pa_filter_known = false;
+    receiver->tune_key_attempted = false;
+    receiver->tune_transition_attempted = false;
+    receiver->tune_frequency_attempted = false;
     receiver->consecutive_transfer_failures = 0;
     receiver->next_command_index = INITIALIZE_INDEX + 1;
 }
@@ -298,6 +503,7 @@ int flex1500_usb_rx_start(flex1500_usb_rx *receiver)
     receiver->frequency_known = false;
     receiver->filter_known = false;
     receiver->sentinel_seen = false;
+    receiver->physical_inputs_known = false;
     receiver->next_command_index = INITIALIZE_INDEX + 1;
     receiver->last_error[0] = '\0';
     receiver->stopping = false;
@@ -346,6 +552,21 @@ int flex1500_usb_rx_start(flex1500_usb_rx *receiver)
     }
 
     receiver->running = true;
+    receiver->status_transfer = libusb_alloc_transfer(0);
+    if (receiver->status_transfer == NULL) {
+        set_error(receiver, "allocate endpoint-0x83 status transfer failed");
+        flex1500_usb_rx_stop(receiver);
+        return LIBUSB_ERROR_NO_MEM;
+    }
+    libusb_fill_interrupt_transfer(
+        receiver->status_transfer, receiver->handle, FLEX1500_EP_STATUS_IN,
+        receiver->status_buffer, sizeof(receiver->status_buffer),
+        status_complete, receiver, 0);
+    result = submit_status(receiver);
+    if (result != LIBUSB_SUCCESS) {
+        flex1500_usb_rx_stop(receiver);
+        return result;
+    }
     for (unsigned int index = 0; index < RX_TRANSFER_COUNT; ++index) {
         rx_slot *slot = &receiver->slots[index];
         slot->receiver = receiver;
@@ -402,12 +623,452 @@ static int send_rx_command(flex1500_usb_rx *receiver, const uint8_t *packet,
     return LIBUSB_SUCCESS;
 }
 
+static void fill_tune_tone(uint8_t *buffer)
+{
+    const double pi = 3.14159265358979323846;
+    const size_t frames = TUNE_TRANSFER_BYTES / 4;
+    for (size_t frame = 0; frame < frames; ++frame) {
+        double phase = 2.0 * pi * TUNE_TONE_HZ * (double)frame /
+                       TUNE_SAMPLE_RATE_HZ;
+        int16_t sample_i = (int16_t)lrint(TUNE_MAGNITUDE * cos(phase));
+        int16_t sample_q = (int16_t)lrint(-TUNE_MAGNITUDE * sin(phase));
+        buffer[frame * 4] = (uint8_t)sample_i;
+        buffer[frame * 4 + 1] = (uint8_t)((uint16_t)sample_i >> 8);
+        buffer[frame * 4 + 2] = (uint8_t)sample_q;
+        buffer[frame * 4 + 3] = (uint8_t)((uint16_t)sample_q >> 8);
+    }
+}
+
+static int service_usb_for(flex1500_usb_rx *receiver, uint64_t duration_ms)
+{
+    uint64_t deadline = monotonic_ms() + duration_ms;
+    while (monotonic_ms() < deadline) {
+        struct timeval timeout = {0, 5000};
+        int result = libusb_handle_events_timeout_completed(
+            receiver->context, &timeout, NULL);
+        if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_INTERRUPTED) {
+            set_libusb_error(receiver, "service Tune USB events", result);
+            return result;
+        }
+        if (!receiver->tune_streaming || !receiver->running) {
+            return LIBUSB_ERROR_IO;
+        }
+    }
+    return LIBUSB_SUCCESS;
+}
+
+static void release_tune_stream(flex1500_usb_rx *receiver)
+{
+    receiver->tune_streaming = false;
+    for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
+        tune_slot *slot = &receiver->tune_slots[index];
+        if (slot->submitted) (void)libusb_cancel_transfer(slot->transfer);
+    }
+    while (receiver->context != NULL && receiver->active_tune_transfers > 0) {
+        struct timeval timeout = {0, 5000};
+        int result = libusb_handle_events_timeout_completed(
+            receiver->context, &timeout, NULL);
+        if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_INTERRUPTED) {
+            break;
+        }
+    }
+    for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
+        tune_slot *slot = &receiver->tune_slots[index];
+        if (slot->transfer != NULL) libusb_free_transfer(slot->transfer);
+        free(slot->buffer);
+        memset(slot, 0, sizeof(*slot));
+    }
+    receiver->active_tune_transfers = 0;
+    receiver->microphone_streaming = false;
+    receiver->microphone_capture_enabled = false;
+}
+
+static int start_tune_stream(flex1500_usb_rx *receiver, bool microphone)
+{
+    receiver->tune_streaming = true;
+    receiver->microphone_streaming = microphone;
+    for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
+        tune_slot *slot = &receiver->tune_slots[index];
+        slot->receiver = receiver;
+        slot->buffer = malloc(TUNE_TRANSFER_BYTES);
+        slot->transfer = libusb_alloc_transfer(TUNE_PACKETS_PER_TRANSFER);
+        if (slot->buffer == NULL || slot->transfer == NULL) {
+            set_error(receiver, "allocate Tune endpoint-0x01 transfer failed");
+            release_tune_stream(receiver);
+            return LIBUSB_ERROR_NO_MEM;
+        }
+        if (microphone) {
+            memset(slot->buffer, 0, TUNE_TRANSFER_BYTES);
+        } else {
+            fill_tune_tone(slot->buffer);
+        }
+        libusb_fill_iso_transfer(
+            slot->transfer, receiver->handle, FLEX1500_EP_SAMPLE_OUT,
+            slot->buffer, TUNE_TRANSFER_BYTES, TUNE_PACKETS_PER_TRANSFER,
+            tune_complete, slot, 0);
+        libusb_set_iso_packet_lengths(slot->transfer,
+                                      FLEX1500_SAMPLE_PACKET_SIZE);
+        int result = libusb_submit_transfer(slot->transfer);
+        if (result != LIBUSB_SUCCESS) {
+            set_libusb_error(receiver, "submit Tune endpoint-0x01", result);
+            release_tune_stream(receiver);
+            return result;
+        }
+        slot->submitted = true;
+        ++receiver->active_tune_transfers;
+    }
+    return LIBUSB_SUCCESS;
+}
+
+static int send_tune_command(flex1500_usb_rx *receiver,
+                             const uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE],
+                             const char *operation)
+{
+    return send_rx_command(receiver, packet, operation);
+}
+
+typedef struct usb_cleanup_context {
+    flex1500_usb_rx *receiver;
+    bool preserve_pa_preparation;
+} usb_cleanup_context;
+
+static int execute_usb_cleanup_action(flex1500_tx_cleanup_action action,
+                                      void *opaque)
+{
+    usb_cleanup_context *context = opaque;
+    flex1500_usb_rx *receiver = context->receiver;
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE];
+
+    switch (action) {
+    case FLEX1500_TX_CLEANUP_TRANSITION_MUTE:
+        flex1500_build_transition_mute_request(receiver->next_command_index++,
+                                               true, packet);
+        return send_tune_command(receiver, packet,
+                                 "TX cleanup transition mute");
+    case FLEX1500_TX_CLEANUP_UNKEY:
+        flex1500_build_tr_request(receiver->next_command_index++, false,
+                                  packet);
+        return send_tune_command(receiver, packet, "TX cleanup SET_TR(0)");
+    case FLEX1500_TX_CLEANUP_RESTORE_RX_FREQUENCY: {
+        if (!receiver->frequency_known) return LIBUSB_SUCCESS;
+        flex1500_build_rx_tune_request(receiver->next_command_index++,
+                                       receiver->frequency_hz, packet, NULL);
+        int result = send_tune_command(receiver, packet,
+                                       "TX cleanup restore RX frequency");
+        if (result == LIBUSB_SUCCESS && receiver->tune_streaming &&
+            receiver->running) {
+            result = service_usb_for(receiver, TUNE_TRANSITION_MS);
+        }
+        return result;
+    }
+    case FLEX1500_TX_CLEANUP_TRANSITION_UNMUTE:
+        flex1500_build_transition_mute_request(receiver->next_command_index++,
+                                               false, packet);
+        return send_tune_command(receiver, packet,
+                                 "TX cleanup transition unmute");
+    case FLEX1500_TX_CLEANUP_RESET_PA_FILTER: {
+        uint32_t filter = 0;
+        if (context->preserve_pa_preparation && receiver->frequency_known) {
+            (void)flex1500_pa_filter_for_frequency(receiver->frequency_hz,
+                                                   &filter);
+        }
+        flex1500_build_pa_filter_request(receiver->next_command_index++, filter,
+                                         packet);
+        int result = send_tune_command(receiver, packet,
+                                       "TX cleanup PA filter");
+        receiver->pa_filter = filter;
+        receiver->pa_filter_known = context->preserve_pa_preparation;
+        return result;
+    }
+    case FLEX1500_TX_CLEANUP_DISABLE_AMPLIFIER:
+        flex1500_build_amp_tx1_request(receiver->next_command_index++, false,
+                                       packet);
+        return send_tune_command(receiver, packet,
+                                 "TX cleanup SET_AMP_TX1(0)");
+    case FLEX1500_TX_CLEANUP_STOP_STREAM:
+        release_tune_stream(receiver);
+        return LIBUSB_SUCCESS;
+    case FLEX1500_TX_CLEANUP_NONE:
+        return LIBUSB_SUCCESS;
+    }
+    return LIBUSB_ERROR_INVALID_PARAM;
+}
+
+int flex1500_usb_rx_enable_transmit_preparation(flex1500_usb_rx *receiver)
+{
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE];
+    if (receiver == NULL || !receiver->running || receiver->handle == NULL ||
+        receiver->transmit_prepared) {
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+    if (receiver->frequency_known) {
+        uint32_t filter;
+        if (!flex1500_pa_filter_for_frequency(receiver->frequency_hz,
+                                               &filter) ||
+            !flex1500_build_pa_filter_request(
+                receiver->next_command_index++, filter, packet)) {
+            return LIBUSB_ERROR_INVALID_PARAM;
+        }
+        int result = send_rx_command(receiver, packet,
+                                     "prepare TX SET_PA_FILTER");
+        if (result != LIBUSB_SUCCESS) return result;
+        receiver->pa_filter = filter;
+        receiver->pa_filter_known = true;
+    }
+    flex1500_build_amp_tx1_request(receiver->next_command_index++, true,
+                                   packet);
+    receiver->amp_enable_attempted = true;
+    int result = send_rx_command(receiver, packet, "prepare TX SET_AMP_TX1(1)");
+    if (result != LIBUSB_SUCCESS) {
+        if (receiver->pa_filter_known) {
+            flex1500_build_pa_filter_request(receiver->next_command_index++, 0,
+                                             packet);
+            (void)send_rx_command(receiver, packet,
+                                  "prepare TX cleanup SET_PA_FILTER(0)");
+            receiver->pa_filter_known = false;
+        }
+        flex1500_build_amp_tx1_request(receiver->next_command_index++, false,
+                                       packet);
+        (void)send_rx_command(receiver, packet,
+                              "prepare TX cleanup SET_AMP_TX1(0)");
+        receiver->amp_enable_attempted = false;
+        return result;
+    }
+    receiver->transmit_prepared = true;
+    return LIBUSB_SUCCESS;
+}
+
+int flex1500_usb_rx_disable_transmit_preparation(flex1500_usb_rx *receiver)
+{
+    if (receiver == NULL || receiver->handle == NULL) {
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+    uint32_t cleanup = flex1500_tx_cleanup_plan(tx_partial_state(receiver));
+    if ((cleanup & (FLEX1500_TX_CLEANUP_UNKEY |
+                    FLEX1500_TX_CLEANUP_RESTORE_RX_FREQUENCY |
+                    FLEX1500_TX_CLEANUP_STOP_STREAM)) != 0) {
+        (void)flex1500_usb_rx_tune_carrier_stop(receiver);
+        cleanup = flex1500_tx_cleanup_plan(tx_partial_state(receiver));
+    }
+    if ((cleanup & (FLEX1500_TX_CLEANUP_RESET_PA_FILTER |
+                    FLEX1500_TX_CLEANUP_DISABLE_AMPLIFIER)) == 0) {
+        return LIBUSB_SUCCESS;
+    }
+    usb_cleanup_context context = {
+        .receiver = receiver,
+        .preserve_pa_preparation = false,
+    };
+    int first_error = flex1500_tx_execute_cleanup(
+        cleanup & (FLEX1500_TX_CLEANUP_RESET_PA_FILTER |
+                   FLEX1500_TX_CLEANUP_DISABLE_AMPLIFIER),
+        execute_usb_cleanup_action, &context, NULL);
+    receiver->transmit_prepared = false;
+    receiver->amp_enable_attempted = false;
+    receiver->pa_filter_known = false;
+    return first_error;
+}
+
+bool flex1500_usb_rx_transmit_prepared(const flex1500_usb_rx *receiver)
+{
+    return receiver != NULL && receiver->transmit_prepared;
+}
+
+bool flex1500_usb_rx_pa_filter(const flex1500_usb_rx *receiver,
+                               uint32_t *filter)
+{
+    if (receiver == NULL || filter == NULL || !receiver->pa_filter_known) {
+        return false;
+    }
+    *filter = receiver->pa_filter;
+    return true;
+}
+
+int flex1500_usb_rx_tune_carrier_start(flex1500_usb_rx *receiver)
+{
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE];
+    uint32_t pa_filter;
+    uint32_t tune_word;
+    if (receiver == NULL || !receiver->running || receiver->handle == NULL ||
+        !receiver->transmit_prepared || !receiver->frequency_known ||
+        receiver->tune_active ||
+        !flex1500_pa_filter_for_frequency(receiver->frequency_hz, &pa_filter) ||
+        !flex1500_usb_tune_frequency_to_tuning_word(
+            receiver->frequency_hz, (uint32_t)TUNE_TONE_HZ, &tune_word)) {
+        if (receiver != NULL) set_error(receiver, "Tune start policy rejected");
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+
+    receiver->tune_prepared = true;
+    flex1500_build_pa_filter_request(receiver->next_command_index++, pa_filter,
+                                     packet);
+    if (send_tune_command(receiver, packet, "Tune SET_PA_FILTER") != 0) goto fail;
+    receiver->pa_filter = pa_filter;
+    receiver->pa_filter_known = true;
+    flex1500_build_amp_tx1_request(receiver->next_command_index++, true, packet);
+    if (send_tune_command(receiver, packet, "Tune SET_AMP_TX1(1)") != 0) goto fail;
+    if (start_tune_stream(receiver, false) != 0 ||
+        service_usb_for(receiver, TUNE_PRE_ROLL_MS) != 0) goto fail;
+    if (receiver->tx_fault_stage == FLEX1500_TX_FAULT_AFTER_STREAM) {
+        set_error(receiver, "injected failure after Tune stream start");
+        goto fail;
+    }
+    flex1500_build_transition_mute_request(receiver->next_command_index++, true,
+                                           packet);
+    receiver->tune_transition_attempted = true;
+    if (send_tune_command(receiver, packet, "Tune transition mute") != 0) goto fail;
+    flex1500_build_tuning_word_request(receiver->next_command_index++, tune_word,
+                                       packet);
+    receiver->tune_frequency_attempted = true;
+    if (send_tune_command(receiver, packet, "Tune carrier frequency") != 0) goto fail;
+    flex1500_build_tr_request(receiver->next_command_index++, true, packet);
+    receiver->tune_key_attempted = true;
+    if (send_tune_command(receiver, packet, "Tune SET_TR(1)") != 0) goto fail;
+    receiver->tune_keyed = true;
+    if (receiver->tx_fault_stage == FLEX1500_TX_FAULT_AFTER_KEY) {
+        set_error(receiver, "injected ambiguous failure after SET_TR(1)");
+        goto fail;
+    }
+    if (service_usb_for(receiver, TUNE_TRANSITION_MS) != 0) goto fail;
+    flex1500_build_transition_mute_request(receiver->next_command_index++, false,
+                                           packet);
+    if (send_tune_command(receiver, packet, "Tune transition unmute") != 0) goto fail;
+    receiver->tune_transition_attempted = false;
+    receiver->tune_active = true;
+    return LIBUSB_SUCCESS;
+
+fail:
+    (void)flex1500_usb_rx_tune_carrier_stop(receiver);
+    return LIBUSB_ERROR_IO;
+}
+
+int flex1500_usb_rx_microphone_tx_start(flex1500_usb_rx *receiver,
+                                       flex1500_tx_sideband sideband,
+                                       unsigned int drive_percent,
+                                       float microphone_gain)
+{
+    uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE];
+    uint32_t pa_filter;
+    uint32_t tx_word;
+    if (receiver == NULL || !receiver->running || receiver->handle == NULL ||
+        !receiver->transmit_prepared || !receiver->frequency_known ||
+        receiver->tune_active || receiver->tune_streaming ||
+        !flex1500_pa_filter_for_frequency(receiver->frequency_hz, &pa_filter) ||
+        !flex1500_usb_tune_frequency_to_tuning_word(receiver->frequency_hz, 0,
+                                                    &tx_word) ||
+        !flex1500_tx_audio_stream_init(&receiver->microphone_stream, sideband,
+                                       drive_percent, microphone_gain)) {
+        if (receiver != NULL) {
+            set_error(receiver, "microphone TX start policy rejected");
+        }
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+
+    receiver->tune_prepared = true;
+    flex1500_build_pa_filter_request(receiver->next_command_index++, pa_filter,
+                                     packet);
+    if (send_tune_command(receiver, packet,
+                          "microphone TX SET_PA_FILTER") != 0) goto fail;
+    receiver->pa_filter = pa_filter;
+    receiver->pa_filter_known = true;
+    flex1500_build_amp_tx1_request(receiver->next_command_index++, true, packet);
+    if (send_tune_command(receiver, packet,
+                          "microphone TX SET_AMP_TX1(1)") != 0) goto fail;
+    if (start_tune_stream(receiver, true) != 0 ||
+        service_usb_for(receiver, TUNE_PRE_ROLL_MS) != 0) goto fail;
+    flex1500_build_transition_mute_request(receiver->next_command_index++, true,
+                                           packet);
+    receiver->tune_transition_attempted = true;
+    if (send_tune_command(receiver, packet,
+                          "microphone TX transition mute") != 0) goto fail;
+    flex1500_build_tuning_word_request(receiver->next_command_index++, tx_word,
+                                       packet);
+    receiver->tune_frequency_attempted = true;
+    if (send_tune_command(receiver, packet,
+                          "microphone TX exact frequency") != 0) goto fail;
+    flex1500_build_tr_request(receiver->next_command_index++, true, packet);
+    receiver->tune_key_attempted = true;
+    if (send_tune_command(receiver, packet,
+                          "microphone TX SET_TR(1)") != 0) goto fail;
+    receiver->tune_keyed = true;
+    receiver->microphone_capture_enabled = true;
+    if (service_usb_for(receiver, TUNE_TRANSITION_MS) != 0) goto fail;
+    flex1500_build_transition_mute_request(receiver->next_command_index++, false,
+                                           packet);
+    if (send_tune_command(receiver, packet,
+                          "microphone TX transition unmute") != 0) goto fail;
+    receiver->tune_transition_attempted = false;
+    receiver->tune_active = true;
+    return LIBUSB_SUCCESS;
+
+fail:
+    (void)flex1500_usb_rx_tune_carrier_stop(receiver);
+    return LIBUSB_ERROR_IO;
+}
+
+int flex1500_usb_rx_microphone_tx_stop(flex1500_usb_rx *receiver)
+{
+    return flex1500_usb_rx_tune_carrier_stop(receiver);
+}
+
+const flex1500_tx_audio_stats *flex1500_usb_rx_microphone_tx_stats(
+    const flex1500_usb_rx *receiver)
+{
+    return receiver != NULL
+        ? flex1500_tx_audio_stream_stats(&receiver->microphone_stream) : NULL;
+}
+
+int flex1500_usb_rx_tune_carrier_stop(flex1500_usb_rx *receiver)
+{
+    int first_error = LIBUSB_SUCCESS;
+    if (receiver == NULL || receiver->handle == NULL) {
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+    if (!receiver->tune_prepared && !receiver->tune_active &&
+        !receiver->tune_keyed && !receiver->tune_key_attempted &&
+        !tx_stream_present(receiver) && !receiver->tune_transition_attempted &&
+        !receiver->tune_frequency_attempted) {
+        return LIBUSB_SUCCESS;
+    }
+
+    uint32_t cleanup = flex1500_tx_cleanup_plan(tx_partial_state(receiver));
+
+    usb_cleanup_context context = {
+        .receiver = receiver,
+        .preserve_pa_preparation = receiver->transmit_prepared,
+    };
+    first_error = flex1500_tx_execute_cleanup(
+        cleanup, execute_usb_cleanup_action, &context, NULL);
+    receiver->tune_keyed = false;
+    receiver->tune_key_attempted = false;
+    receiver->tune_active = false;
+    receiver->tune_prepared = false;
+    receiver->tune_transition_attempted = false;
+    receiver->tune_frequency_attempted = false;
+    if (tx_stream_present(receiver)) release_tune_stream(receiver);
+    flex1500_iq_ring_clear(receiver->destination);
+    return first_error;
+}
+
+bool flex1500_usb_rx_tune_carrier_active(const flex1500_usb_rx *receiver)
+{
+    return receiver != NULL && receiver->tune_active;
+}
+
+void flex1500_usb_rx_set_tx_fault_stage(flex1500_usb_rx *receiver,
+                                        flex1500_tx_fault_stage stage)
+{
+    if (receiver != NULL) receiver->tx_fault_stage = stage;
+}
+
 int flex1500_usb_rx_tune(flex1500_usb_rx *receiver, uint32_t frequency_hz)
 {
     uint8_t tune[FLEX1500_COMMAND_PACKET_SIZE];
     uint8_t filter_packet[FLEX1500_COMMAND_PACKET_SIZE];
+    uint8_t pa_filter_packet[FLEX1500_COMMAND_PACKET_SIZE];
     uint32_t filter;
-    if (receiver == NULL || !receiver->running || receiver->handle == NULL) {
+    uint32_t pa_filter = 0;
+    if (receiver == NULL || !receiver->running || receiver->handle == NULL ||
+        receiver->tune_active || receiver->tune_keyed) {
         return LIBUSB_ERROR_INVALID_PARAM;
     }
     if (!flex1500_rx_filter_for_frequency(frequency_hz, &filter) ||
@@ -419,7 +1080,17 @@ int flex1500_usb_rx_tune(flex1500_usb_rx *receiver, uint32_t frequency_hz)
         set_error(receiver, "RX tune rejected by frequency/filter policy");
         return LIBUSB_ERROR_INVALID_PARAM;
     }
-    receiver->next_command_index = (uint8_t)(receiver->next_command_index + 2);
+    uint8_t command_count = receiver->transmit_prepared ? 3 : 2;
+    if (receiver->transmit_prepared &&
+        (!flex1500_pa_filter_for_frequency(frequency_hz, &pa_filter) ||
+         !flex1500_build_pa_filter_request(
+             (uint8_t)(receiver->next_command_index + 2), pa_filter,
+             pa_filter_packet))) {
+        set_error(receiver, "TX PA filter mapping failed during RX tune");
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+    receiver->next_command_index =
+        (uint8_t)(receiver->next_command_index + command_count);
     int result = send_rx_command(receiver, tune, "send SET_RX1_FREQ_TW");
     if (result != LIBUSB_SUCCESS) return result;
     receiver->frequency_hz = frequency_hz;
@@ -429,6 +1100,16 @@ int flex1500_usb_rx_tune(flex1500_usb_rx *receiver, uint32_t frequency_hz)
     if (result != LIBUSB_SUCCESS) return result;
     receiver->rx_filter = filter;
     receiver->filter_known = true;
+    if (receiver->transmit_prepared) {
+        result = send_rx_command(receiver, pa_filter_packet,
+                                 "send mapped SET_PA_FILTER");
+        if (result != LIBUSB_SUCCESS) {
+            receiver->pa_filter_known = false;
+            return result;
+        }
+        receiver->pa_filter = pa_filter;
+        receiver->pa_filter_known = true;
+    }
     flex1500_iq_ring_clear(receiver->destination);
     ++receiver->counters.rx_tune_operations;
     return LIBUSB_SUCCESS;
@@ -438,6 +1119,7 @@ int flex1500_usb_rx_set_gain(flex1500_usb_rx *receiver, int32_t gain_db)
 {
     uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE];
     if (receiver == NULL || !receiver->running || receiver->handle == NULL ||
+        receiver->tune_active || receiver->tune_keyed ||
         gain_db < -10 || gain_db > 30 || gain_db % 10 != 0) {
         return LIBUSB_ERROR_INVALID_PARAM;
     }
@@ -497,5 +1179,14 @@ bool flex1500_usb_rx_gain(const flex1500_usb_rx *receiver, int32_t *gain_db)
 {
     if (receiver == NULL || gain_db == NULL || !receiver->gain_known) return false;
     *gain_db = receiver->gain_db;
+    return true;
+}
+
+bool flex1500_usb_rx_physical_inputs(
+    const flex1500_usb_rx *receiver, flex1500_physical_inputs *inputs)
+{
+    if (receiver == NULL || inputs == NULL ||
+        !receiver->physical_inputs_known) return false;
+    *inputs = receiver->physical_inputs;
     return true;
 }

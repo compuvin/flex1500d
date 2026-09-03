@@ -27,6 +27,7 @@ int main(int argc, char **argv)
     CHECK(device->getDriverKey() == "flex1500");
     CHECK(device->getNumChannels(SOAPY_SDR_RX) == 1);
     CHECK(device->getNumChannels(SOAPY_SDR_TX) == 0);
+    CHECK(device->getHardwareInfo().at("daemon_transmit_enabled") == "true");
     CHECK(device->getSampleRate(SOAPY_SDR_RX, 0) == 48000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_RX, 0).front().minimum() == 100000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_RX, 0).back().maximum() == 54000000.0);

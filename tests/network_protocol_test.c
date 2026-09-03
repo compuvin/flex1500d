@@ -37,6 +37,16 @@ int main(void)
         .last_sentinel_frame = 2000,
         .first_sentinel_ms = 200,
         .last_sentinel_ms = 400,
+        .physical_status_packets = 8,
+        .physical_status_changes = 2,
+        .tx_starts = 11,
+        .tx_stops = 10,
+        .tx_underruns = 9,
+        .tx_clipped_frames = 12,
+        .tx_dropped_microphone_frames = 13,
+        .tx_rejected_ownership_requests = 8,
+        .tx_watchdog_stops = 7,
+        .tx_cleanup_failures = 6,
     };
     flex1500_radio_info radio = {
         .model = "FLEX-1500",
@@ -45,6 +55,12 @@ int main(void)
         .usb_product_id = 0x1502,
         .receive_only = true,
         .transmit_enabled = false,
+        .transmit_prepared = false,
+        .tune_enabled = false,
+        .tune_active = false,
+        .tx_timeout_seconds = 180,
+        .tx_drive_percent = 50,
+        .tx_microphone_gain_db = 10,
         .rx_tuning_enabled = true,
         .frequency_known = true,
         .frequency_hz = 10000000,
@@ -52,9 +68,11 @@ int main(void)
         .rx_filter = 5,
         .rx_mode = "usb",
         .rx_bandwidth_hz = 2700,
+        .physical_inputs_known = true,
+        .mic_ptt = true,
     };
     char json[4096];
-    char radio_json[512];
+    char radio_json[1024];
     char http[2048];
     uint8_t frame[64];
     const flex1500_iq_sample samples[] = {{1.0f, -1.0f}};
@@ -98,6 +116,18 @@ int main(void)
     CHECK(strstr(json, "\"usb_missing_bytes\": 268") != NULL);
     CHECK(strstr(json, "\"usb_first_error_ms\": 125") != NULL);
     CHECK(strstr(json, "\"last_sentinel_frame\": 2000") != NULL);
+    CHECK(strstr(json, "\"physical_status_packets\": 8") != NULL);
+    CHECK(strstr(json, "\"physical_status_changes\": 2") != NULL);
+    CHECK(strstr(json, "\"tx_starts\": 11") != NULL);
+    CHECK(strstr(json, "\"tx_stops\": 10") != NULL);
+    CHECK(strstr(json, "\"tx_underruns\": 9") != NULL);
+    CHECK(strstr(json, "\"tx_clipped_frames\": 12") != NULL);
+    CHECK(strstr(json,
+                 "\"tx_dropped_microphone_frames\": 13") != NULL);
+    CHECK(strstr(json,
+                 "\"tx_rejected_ownership_requests\": 8") != NULL);
+    CHECK(strstr(json, "\"tx_watchdog_stops\": 7") != NULL);
+    CHECK(strstr(json, "\"tx_cleanup_failures\": 6") != NULL);
 
     size_t radio_length = flex1500_build_radio_json(
         &radio, radio_json, sizeof(radio_json));
@@ -108,12 +138,23 @@ int main(void)
     CHECK(strstr(radio_json, "\"usb_product_id\": \"1502\"") != NULL);
     CHECK(strstr(radio_json, "\"receive_only\": true") != NULL);
     CHECK(strstr(radio_json, "\"transmit_enabled\": false") != NULL);
+    CHECK(strstr(radio_json, "\"transmit_prepared\": false") != NULL);
+    CHECK(strstr(radio_json, "\"tune_enabled\": false") != NULL);
+    CHECK(strstr(radio_json, "\"tune_active\": false") != NULL);
+    CHECK(strstr(radio_json, "\"tx_timeout_seconds\": 180") != NULL);
+    CHECK(strstr(radio_json, "\"tx_drive_percent\": 50") != NULL);
+    CHECK(strstr(radio_json,
+                 "\"tx_microphone_gain_db\": 10") != NULL);
+    CHECK(strstr(radio_json, "\"pa_filter\": null") != NULL);
     CHECK(strstr(radio_json, "\"rx_tuning_enabled\": true") != NULL);
     CHECK(strstr(radio_json, "\"frequency_hz\": 10000000") != NULL);
     CHECK(strstr(radio_json, "\"rx_filter\": 5") != NULL);
     CHECK(strstr(radio_json, "\"rx_gain_db\": null") != NULL);
     CHECK(strstr(radio_json, "\"rx_mode\": \"usb\"") != NULL);
     CHECK(strstr(radio_json, "\"rx_bandwidth_hz\": 2700") != NULL);
+    CHECK(strstr(radio_json, "\"physical_inputs_known\": true") != NULL);
+    CHECK(strstr(radio_json, "\"mic_ptt\": true") != NULL);
+    CHECK(strstr(radio_json, "\"flexwire_ptt\": false") != NULL);
 
     size_t http_length = flex1500_build_http_response(
         "GET /v1/status HTTP/1.1\r\n\r\n", json, radio_json, http,

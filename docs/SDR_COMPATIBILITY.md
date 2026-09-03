@@ -43,7 +43,7 @@ shelved, and `/v1/radio` advertises `receive_only: true` and
 
 ## Before LAN exposure
 
-The current daemon binds only to loopback. A remote adapter can initially run on
+The daemon listens on the LAN. A remote adapter can run on
 the same host. Direct LAN binding will be added only with an explicit listen
 address and access policy; state-changing RX tuning must not become available
 to arbitrary network clients accidentally.

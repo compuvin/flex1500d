@@ -1,6 +1,6 @@
 # Fixed 700/1900 Hz two-tone TX probe
 
-> **Minimally tested TX research:** This source is excluded from the default
+> **Minimally tested TX research:** This executable is included in the default
 > build. Its arming string is a safety interlock, not access control. Do not
 > execute it on an antenna; a suitable 50-ohm dummy load and a separately
 > reviewed and authorized test plan are mandatory.

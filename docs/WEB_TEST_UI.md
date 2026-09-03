@@ -53,11 +53,13 @@ available only when the exact `--enable-test-page` flag is present:
 After that separately permissioned command starts, open:
 
 ```text
-http://127.0.0.1:15000/test
+http://DAEMON_HOST:15000/test
 ```
 
-The server remains bound to loopback, so the browser must run on the daemon
-host. Browser audio must support a 48 kHz `AudioContext` and `AudioWorklet`.
+The browser may run on the daemon host or another trusted LAN computer. The
+current API is unauthenticated and unencrypted, so the daemon port must be
+restricted to trusted hosts. Browser audio must support a 48 kHz `AudioContext`
+and `AudioWorklet`.
 
 The offline form can validate page delivery without USB or radio access:
 

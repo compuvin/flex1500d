@@ -25,13 +25,14 @@ typedef struct probe_options {
 
 static void print_plan(void)
 {
-    puts("FLEX-1500 status probe (NOT ARMED)");
+    puts("FLEX-1500 receive-only physical-input listener (NOT RUNNING)");
     puts("Planned USB operations:");
     puts("  1. Initialize libusb.");
     puts("  2. Open only device 2192:1502.");
     puts("  3. Refuse to continue if interface 3 has a kernel driver.");
     puts("  4. Claim interface 3 without detaching any driver.");
-    puts("  5. Attempt interrupt IN reads from endpoint 0x83 only.");
+    puts("  5. Read endpoint 0x83 and decode active-low mic PTT, FlexWire PTT,");
+    puts("     dash, and dot state without acting on any state.");
     puts("  6. Release the interface and close the device.");
     puts("Excluded: control transfers, OUT transfers, device reset,");
     puts("configuration changes, alternate settings, and endpoint 0x82.");
@@ -41,10 +42,10 @@ static void print_plan(void)
 static void print_usage(const char *program)
 {
     printf("Usage: %s [--help]\n", program);
-    printf("       %s --execute-approved-status-probe [--attempts N]\n", program);
+    printf("       %s --listen-physical-inputs [--attempts N]\n", program);
     puts("");
     puts("With no arguments, prints the offline plan and exits.");
-    puts("The execution flag must only be used after explicit permission from KB1JDX.");
+    puts("The listener performs USB IN reads only and sends no radio command.");
 }
 
 static bool parse_uint(const char *text, unsigned int *value)
@@ -73,7 +74,8 @@ static bool parse_options(int argc, char **argv, probe_options *options)
             print_usage(argv[0]);
             exit(EXIT_SUCCESS);
         }
-        if (strcmp(argv[index], "--execute-approved-status-probe") == 0) {
+        if (strcmp(argv[index], "--listen-physical-inputs") == 0 ||
+            strcmp(argv[index], "--execute-approved-status-probe") == 0) {
             options->armed = true;
             continue;
         }
@@ -103,11 +105,24 @@ static void print_packet(unsigned int sequence, const unsigned char *data,
     putchar('\n');
 }
 
+static void print_inputs(const char *prefix,
+                         const flex1500_physical_inputs *inputs)
+{
+    printf("%s raw=0x%02x mic_ptt=%s flexwire_ptt=%s dash=%s dot=%s\n",
+           prefix, inputs->raw_status,
+           inputs->mic_ptt ? "pressed" : "released",
+           inputs->flexwire_ptt ? "pressed" : "released",
+           inputs->dash ? "pressed" : "released",
+           inputs->dot ? "pressed" : "released");
+}
+
 static int run_probe(const probe_options *options)
 {
     libusb_context *context = NULL;
     libusb_device_handle *handle = NULL;
     unsigned int received = 0;
+    bool have_previous = false;
+    flex1500_physical_inputs previous = {0};
     int result = libusb_init(&context);
 
     if (result != LIBUSB_SUCCESS) {
@@ -173,6 +188,19 @@ static int run_probe(const probe_options *options)
 
         ++received;
         print_packet(received, packet, transferred);
+        flex1500_physical_inputs inputs;
+        if (!flex1500_decode_physical_inputs(packet, (size_t)transferred,
+                                             &inputs)) {
+            fputs("Unable to decode physical-input status.\n", stderr);
+            continue;
+        }
+        if (!have_previous ||
+            !flex1500_physical_inputs_equal(&inputs, &previous)) {
+            print_inputs(have_previous ? "input change:" : "input state:",
+                         &inputs);
+            previous = inputs;
+            have_previous = true;
+        }
     }
 
     {

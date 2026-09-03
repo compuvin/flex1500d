@@ -9,11 +9,24 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    name: Linux ${{ matrix.arch }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        build_type: [Debug, Release]
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            build_type: Debug
+          - arch: x86_64
+            runner: ubuntu-latest
+            build_type: Release
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            build_type: Debug
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            build_type: Release
 
     steps:
       - name: Check out source
@@ -32,7 +45,7 @@ jobs:
           -DCMAKE_C_FLAGS=-Werror
           -DCMAKE_CXX_FLAGS=-Werror
           -DFLEX1500_BUILD_SOAPYSDR=ON
-          -DFLEX1500_BUILD_TX_RESEARCH=OFF
+          -DFLEX1500_BUILD_TX_RESEARCH=ON
 
       - name: Build
         run: cmake --build build --parallel

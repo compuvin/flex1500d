@@ -1,9 +1,9 @@
 # Transmit research safety and scope
 
-`flex1500d` is intentionally receive-only. The daemon has no TX sample
-producer, endpoint-`0x01` output scheduler, PTT/MOX control route, or network
-transmit endpoint. `GET /v1/radio` reports `transmit_enabled: false`, and tests
-require representative TX/PTT API requests to remain unavailable.
+The basic and RX-tuning daemon modes are receive-only. The separate
+`--initialize-radio-and-enable-transmit` mode currently enables only the
+validated fixed Tune carrier; it does not enable general PTT, microphone
+modulation, arbitrary transmit I/Q, or SoapySDR transmit.
 
 The repository retains three standalone TX-owned research programs so the
 reverse-engineered protocol and experimental evidence remain auditable:
@@ -12,14 +12,15 @@ reverse-engineered protocol and experimental evidence remain auditable:
 - fixed zero-I/Q transmit-switching probe
 - fixed 700/1900 Hz two-tone transmit probe
 
-These executables are excluded from the default build. They are created only
-when CMake is explicitly configured with:
+These executables are included in the standard build. A constrained build may
+omit them with:
 
 ```sh
--DFLEX1500_BUILD_TX_RESEARCH=ON
+-DFLEX1500_BUILD_TX_RESEARCH=OFF
 ```
 
-That option does not enable transmit in the daemon or API.
+This build option controls only the standalone executables. Daemon transmit
+availability is selected at runtime by its exact startup mode.
 
 ## Minimal validation
 
@@ -27,7 +28,8 @@ The probes have only been exercised in a few fixed, controlled experiments.
 They do not establish general transmitter safety, spectral purity, output
 power accuracy, safe operation at other frequencies or amplitudes, reliable
 behavior after arbitrary USB/process failures, or suitability for on-air use.
-They are research artifacts, not supported radio controls.
+They are research artifacts, not supported radio controls. Execution is for
+testing and entirely at the operator's own risk.
 
 ## Arming strings are not security
 

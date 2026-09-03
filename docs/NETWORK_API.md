@@ -2,9 +2,15 @@
 
 ## Security and binding
 
-The first server mode binds only to `127.0.0.1`. It is not reachable from other
-machines. Remote-LAN binding, authentication, and access policy will be designed
-before exposing the daemon beyond localhost.
+Server modes listen on all IPv4 interfaces (`0.0.0.0`) using the selected TCP
+port. Port 15000 is the normal default for clients and future service packaging,
+so installations do not need a machine-specific bind address.
+
+API version 1 does not yet provide authentication or transport encryption.
+Treat it as a trusted-LAN interface: restrict the port with the daemon host's
+firewall, do not create an internet port-forward, and do not expose it on an
+untrusted Wi-Fi network. Secure authenticated/encrypted access remains a
+separate roadmap item.
 
 The offline server cannot open the radio:
 
@@ -13,7 +19,7 @@ The offline server cannot open the radio:
 ```
 
 The permission-gated live RX server is also implemented and has completed its
-first validation. Both modes remain loopback-only.
+first validation. Both modes use the same LAN listener.
 
 An embedded receive test client is available only with the separate
 `--enable-test-page` flag at `GET /test`. Normal daemon modes return 404 for
@@ -40,6 +46,20 @@ Current fields include:
 - network frame and sample delivery counts
 - network backpressure, disconnect, and write-error counts
 
+Transmit diagnostics are also reported:
+
+- `tx_starts` and `tx_stops` count successful Tune starts and all active-Tune
+  stop attempts;
+- `tx_underruns` is ready for the future continuous TX scheduler and remains
+  zero while only the fixed Tune stream is available;
+- `tx_rejected_ownership_requests` counts busy starts and invalid or mismatched
+  Tune lease operations;
+- `tx_watchdog_stops` counts lease-expiry and hard-limit stops; and
+- `tx_cleanup_failures` counts Tune or final PA/amplifier cleanup failures.
+
+The daemon also prints the six-counter summary during shutdown. Counters survive
+an automatic USB recovery within the same daemon process.
+
 Responses include `Content-Length`, close the connection after one request, and
 set `Cache-Control: no-store`.
 
@@ -50,10 +70,15 @@ GET /v1/radio HTTP/1.1
 ```
 
 This read-only JSON route reports the verified model, firmware, USB VID/PID,
-and the daemon capability boundary. It explicitly reports
-`receive_only: true` and `transmit_enabled: false`. It also reports whether RX
-tuning is armed and the current frequency/filter when known. It also reports
-the host receive mode and nominal DSP bandwidth.
+and the daemon capability boundary. Normal startup reports `receive_only: true`,
+`transmit_enabled: false`, `tune_enabled: false`, and `tune_active: false`.
+The transmit-enabled startup reports Tune capability and current activity
+through those fields. The route also reports whether RX tuning is enabled and
+the current frequency/filter when known. It also reports
+the host receive mode and nominal DSP bandwidth. The fields
+`physical_inputs_known`, `mic_ptt`, `flexwire_ptt`, `dash`, and `dot` expose the
+latest receive-only endpoint-`0x83` observation. They are diagnostic state;
+the daemon does not act on them.
 
 ## Receive demodulator mode
 
@@ -138,10 +163,60 @@ The new live command is deliberately distinct:
 ```
 
 It initializes the radio and permits receive frequency/filter and validated
-receive-gain writes from the loopback API. It does not enable PA-filter, PTT,
-TX samples, EEPROM, firmware, antenna/path routing, or other control operations. Running it requires a
-separate exact permission from KB1JDX. The older `--initialize-radio` token does
-not enable receive-frequency or receive-gain control.
+receive-gain writes from the API. It does not enable Tune or any other
+transmit operation. The older `--initialize-radio` token does not enable
+receive-frequency or receive-gain control.
+
+## Tune control
+
+The fixed, capture-matched nominal 5 W Tune carrier is available only with the
+transmit-enabled live daemon command:
+
+```sh
+./build/flex1500d --serve-live-rx 15000 \
+  --initialize-radio-and-enable-transmit
+```
+
+These routes are available through the LAN API:
+
+- `PUT /v1/radio/tune/start` returns a lease;
+- `PUT /v1/radio/tune/keepalive/LEASE` renews its 15-second watchdog; and
+- `PUT /v1/radio/tune/stop/LEASE` stops immediately.
+
+The transmit-enabled daemon also accepts `PUT /v1/radio/tx-drive/PERCENT`
+(1–100) and `PUT /v1/radio/mic-gain/DB` (0–70 dB) while unkeyed. Defaults are
+50% drive and 10 dB microphone gain, matching PowerSDR's factory MIC control
+value and scaling. These configure the immutable profile
+captured by the next physical PTT press; neither route keys the transmitter.
+Frequency, mode, drive, and microphone-gain changes return `409 Conflict` while
+any TX owner is active.
+
+Physical microphone TX additionally requires USB or LSB and a known frequency
+inside the daemon's conservative U.S. amateur voice-allocation policy: the
+160, 80, 40, 20, 17, 15, 12, 10, or 6 meter allocation, or the permitted
+60-meter USB spectrum/carriers. This guard is not a substitute for the control
+operator's license-class, subband, emission, power, and geographic obligations.
+The operator remains responsible for legal operation.
+
+The shared maximum-transmit timer is configured with:
+
+```http
+PUT /v1/radio/tx-timeout/180 HTTP/1.1
+```
+
+It defaults to 180 seconds and accepts 30 through 1800 seconds. Zero is
+rejected, so the safety timer cannot be disabled. Changes while any TX owner is
+active return `409 Conflict`; the API/Soapy control connection remains
+connected. `GET /v1/radio` reports the current value as
+`tx_timeout_seconds`, and automatic USB recovery preserves it.
+
+Tune has an independent 60-second hard limit. Expiry, shutdown, USB failure,
+or a partial startup failure invokes transition mute, `SET_TR(0)`, receive-
+frequency restoration, PA-filter reset, and endpoint-stream cancellation.
+The lease is a safety/ownership mechanism, not access control. API
+authentication remains a separate project item. Until then,
+firewall access to the API must be limited to trusted station-control hosts.
+SoapySDR remains receive-only and does not expose Tune.
 
 ## IQ stream endpoint
 
@@ -154,8 +229,7 @@ The offline server returns `503 Service Unavailable`. The live RX server returns
 
 The permission-gated live mode will return `200 OK` with
 `application/octet-stream` and stream frames until the client disconnects. It
-supports one IQ client at a time and remains bound to loopback for the first
-validation.
+supports one IQ client at a time.
 
 ## Binary IQ frame
 

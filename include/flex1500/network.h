@@ -50,6 +50,9 @@ typedef struct flex1500_service_status {
     uint64_t usb_missing_bytes;
     uint64_t usb_trailing_bytes;
     uint64_t usb_error_events;
+    uint64_t physical_status_packets;
+    uint64_t physical_status_changes;
+    uint64_t physical_status_errors;
     uint64_t usb_first_error_ms;
     uint64_t usb_last_error_ms;
     uint64_t first_sentinel_frame;
@@ -58,6 +61,14 @@ typedef struct flex1500_service_status {
     uint64_t last_sentinel_ms;
     uint64_t rx_recovery_attempts;
     uint64_t rx_recovery_successes;
+    uint64_t tx_starts;
+    uint64_t tx_stops;
+    uint64_t tx_underruns;
+    uint64_t tx_clipped_frames;
+    uint64_t tx_dropped_microphone_frames;
+    uint64_t tx_rejected_ownership_requests;
+    uint64_t tx_watchdog_stops;
+    uint64_t tx_cleanup_failures;
 } flex1500_service_status;
 
 typedef struct flex1500_radio_info {
@@ -67,6 +78,14 @@ typedef struct flex1500_radio_info {
     uint16_t usb_product_id;
     bool receive_only;
     bool transmit_enabled;
+    bool transmit_prepared;
+    bool tune_enabled;
+    bool tune_active;
+    uint32_t tx_timeout_seconds;
+    uint32_t tx_drive_percent;
+    uint32_t tx_microphone_gain_db;
+    bool pa_filter_known;
+    uint32_t pa_filter;
     bool rx_tuning_enabled;
     bool frequency_known;
     uint32_t frequency_hz;
@@ -77,6 +96,11 @@ typedef struct flex1500_radio_info {
     const char *rx_mode;
     uint32_t rx_bandwidth_hz;
     int32_t rx_squelch_db;
+    bool physical_inputs_known;
+    bool mic_ptt;
+    bool flexwire_ptt;
+    bool dash;
+    bool dot;
 } flex1500_radio_info;
 
 size_t flex1500_build_status_json(const flex1500_service_status *status,

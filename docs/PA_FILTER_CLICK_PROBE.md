@@ -1,6 +1,6 @@
 # FLEX-1500 PA filter relay click probe
 
-> **TX-owned research:** This probe is excluded from the default build. Its
+> **TX-owned research:** This probe is included in the default build. Its
 > arming string is a safety interlock, not access control. It does not key the
 > transmitter, but it changes the transmitter's PA-filter relay state and must
 > remain within the reviewed research workflow described in

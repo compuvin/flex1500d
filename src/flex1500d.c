@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "flex1500/api.h"
 #include "flex1500/dsp.h"
 #include "flex1500/iq.h"
@@ -18,7 +20,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/random.h>
 #include <netinet/in.h>
+#include <time.h>
 #include <poll.h>
 #include <unistd.h>
 
@@ -45,6 +49,25 @@ typedef struct http_client_state {
     size_t length;
 } http_client_state;
 
+static uint64_t monotonic_ms(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    return (uint64_t)now.tv_sec * UINT64_C(1000) +
+           (uint64_t)now.tv_nsec / UINT64_C(1000000);
+}
+
+static uint64_t initial_tune_lease(void)
+{
+    uint64_t lease = 0;
+    ssize_t count = getrandom(&lease, sizeof(lease), GRND_NONBLOCK);
+    if (count != (ssize_t)sizeof(lease) || lease == 0) {
+        lease = monotonic_ms() ^ ((uint64_t)(unsigned int)getpid() << 32);
+    }
+    lease &= (UINT64_C(1) << 53) - 1;
+    return lease != 0 ? lease : UINT64_C(1);
+}
+
 static void print_usage(const char *program)
 {
     printf("Usage: %s [--help] [--status] [--analyze IQ16LE_FILE]\n", program);
@@ -58,14 +81,18 @@ static void print_usage(const char *program)
            program);
     printf("       %s --serve-live-rx PORT --initialize-radio-and-enable-rx-tuning --enable-test-page\n",
            program);
+    printf("       %s --serve-live-rx PORT --initialize-radio-and-enable-transmit [--enable-test-page]\n",
+           program);
     puts("Default, status, analysis, demod, framing, and offline-server modes");
     puts("do not open the radio. --frame-capture is offline file conversion.");
     puts("--demod is offline and writes 48 kHz mono PCM16 WAV audio.");
-    puts("--serve-offline binds only 127.0.0.1.");
+    puts("Server modes listen on all IPv4 interfaces. Restrict TCP port 15000");
+    puts("to trusted LAN hosts with a firewall; authentication is not implemented.");
     puts("Live RX always sends opcode-1219 INITIALIZE. The separately armed");
     puts("tuning mode may also send RX-frequency and RX-filter commands.");
-    puts("Never run either without KB1JDX's explicit permission. Both bind");
-    puts("only 127.0.0.1, and neither mode contains a TX/PTT path.");
+    puts("Never run live hardware modes without KB1JDX's explicit permission.");
+    puts("Only --initialize-radio-and-enable-transmit prepares the PA path and");
+    puts("enables the nominal 5 W Tune API. Its lease is not authentication.");
 }
 
 static void print_idle_status(void)
@@ -130,7 +157,7 @@ static int send_web_ui(int socket_fd)
         send_all(socket_fd, page, page_length) : -1;
 }
 
-static int open_loopback_listener(const char *port_text, unsigned long *port)
+static int open_listener(const char *port_text, unsigned long *port)
 {
     char *end = NULL;
     *port = strtoul(port_text, &end, 10);
@@ -145,7 +172,7 @@ static int open_loopback_listener(const char *port_text, unsigned long *port)
     struct sockaddr_in address = {
         .sin_family = AF_INET,
         .sin_port = htons((uint16_t)*port),
-        .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
     };
     if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
         listen(listener, 8) != 0) {
@@ -158,16 +185,17 @@ static int open_loopback_listener(const char *port_text, unsigned long *port)
 static int serve_offline(const char *port_text, bool test_page_enabled)
 {
     unsigned long parsed;
-    int listener = open_loopback_listener(port_text, &parsed);
+    int listener = open_listener(port_text, &parsed);
     if (listener < 0) {
-        perror("open loopback listener");
+        perror("open listener");
         return EXIT_FAILURE;
     }
 
     server_stop_requested = 0;
     signal(SIGINT, request_server_stop);
     signal(SIGTERM, request_server_stop);
-    printf("flex1500d offline API listening on http://127.0.0.1:%lu\n", parsed);
+    printf("flex1500d offline API listening on 0.0.0.0:%lu (unauthenticated trusted-LAN access)\n",
+           parsed);
     fflush(stdout);
 
     flex1500_service_status status = {
@@ -199,6 +227,7 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
         }
         if (received > 0 &&
             flex1500_http_request_complete(request, (size_t)received)) {
+            api.request_now_ms = monotonic_ms();
             char response[4096];
             size_t response_length = 0;
             flex1500_api_action action = flex1500_api_dispatch(
@@ -251,12 +280,15 @@ static int api_set_rx_gain(void *context, int32_t gain_db)
 
 static flex1500_service_status live_service_status(
     const flex1500_usb_rx *receiver, const flex1500_iq_ring *ring,
-    const flex1500_iq_publisher *publisher, uint64_t recovery_attempts,
+    const flex1500_iq_publisher *publisher,
+    const flex1500_tune_control *tune_control, uint64_t recovery_attempts,
     uint64_t recovery_successes)
 {
     const flex1500_usb_rx_counters *usb =
         flex1500_usb_rx_get_counters(receiver);
     const flex1500_iq_stats *iq = flex1500_usb_rx_get_iq_stats(receiver);
+    const flex1500_tx_diagnostics *tx =
+        flex1500_tune_control_diagnostics(tune_control);
     return (flex1500_service_status){
         .state = "receiving", .radio_open = true, .network_listening = true,
         .sample_rate = 48000, .frames = iq->frames,
@@ -288,6 +320,9 @@ static flex1500_service_status live_service_status(
         .usb_missing_bytes = usb->missing_bytes,
         .usb_trailing_bytes = usb->trailing_bytes,
         .usb_error_events = usb->error_events,
+        .physical_status_packets = usb->status_packets,
+        .physical_status_changes = usb->status_changes,
+        .physical_status_errors = usb->status_errors,
         .usb_first_error_ms = usb->first_error_ms,
         .usb_last_error_ms = usb->last_error_ms,
         .first_sentinel_frame = usb->first_sentinel_frame,
@@ -296,26 +331,130 @@ static flex1500_service_status live_service_status(
         .last_sentinel_ms = usb->last_sentinel_ms,
         .rx_recovery_attempts = recovery_attempts,
         .rx_recovery_successes = recovery_successes,
+        .tx_starts = tx != NULL ? tx->starts : 0,
+        .tx_stops = tx != NULL ? tx->stops : 0,
+        .tx_underruns = tx != NULL ? tx->underruns : 0,
+        .tx_clipped_frames = tx != NULL ? tx->clipped_frames : 0,
+        .tx_dropped_microphone_frames =
+            tx != NULL ? tx->dropped_microphone_frames : 0,
+        .tx_rejected_ownership_requests =
+            tx != NULL ? tx->rejected_ownership_requests : 0,
+        .tx_watchdog_stops = tx != NULL ? tx->watchdog_stops : 0,
+        .tx_cleanup_failures = tx != NULL ? tx->cleanup_failures : 0,
     };
 }
 
-static flex1500_radio_info live_radio_info(const flex1500_usb_rx *receiver)
+static flex1500_radio_info live_radio_info(const flex1500_usb_rx *receiver,
+                                           bool transmit_enabled)
 {
     flex1500_radio_info radio = RADIO_INFO;
+    radio.receive_only = !transmit_enabled;
+    radio.transmit_enabled = transmit_enabled;
+    radio.transmit_prepared = flex1500_usb_rx_transmit_prepared(receiver);
+    radio.tune_enabled = transmit_enabled;
+    radio.tune_active = flex1500_usb_rx_tune_carrier_active(receiver);
+    radio.pa_filter_known = flex1500_usb_rx_pa_filter(receiver,
+                                                      &radio.pa_filter);
+    flex1500_physical_inputs inputs;
     radio.frequency_known = flex1500_usb_rx_frequency(
         receiver, &radio.frequency_hz);
     radio.rx_filter_known = flex1500_usb_rx_filter(receiver, &radio.rx_filter);
     radio.rx_gain_known = flex1500_usb_rx_gain(receiver, &radio.rx_gain_db);
+    radio.physical_inputs_known = flex1500_usb_rx_physical_inputs(
+        receiver, &inputs);
+    if (radio.physical_inputs_known) {
+        radio.mic_ptt = inputs.mic_ptt;
+        radio.flexwire_ptt = inputs.flexwire_ptt;
+        radio.dash = inputs.dash;
+        radio.dot = inputs.dot;
+    }
     return radio;
 }
 
+typedef struct daemon_tx_context {
+    flex1500_usb_rx *receiver;
+    flex1500_api_controller *api;
+    flex1500_tune_control *tune_control;
+    uint32_t frequency_hz;
+    const char *mode;
+    uint32_t drive_percent;
+    uint32_t microphone_gain_db;
+} daemon_tx_context;
+
+static int daemon_tx_owner_start(void *context, flex1500_tx_owner owner)
+{
+    daemon_tx_context *tx = context;
+    if (owner == FLEX1500_TX_OWNER_TUNE) {
+        return flex1500_usb_rx_tune_carrier_start(tx->receiver);
+    }
+    if (owner != FLEX1500_TX_OWNER_PHYSICAL_MIC || tx->api == NULL ||
+        !flex1500_usb_rx_frequency(tx->receiver, &tx->frequency_hz)) {
+        return -1;
+    }
+    flex1500_tx_sideband sideband;
+    if (strcmp(tx->api->rx_mode, "usb") == 0) {
+        sideband = FLEX1500_TX_USB;
+    } else if (strcmp(tx->api->rx_mode, "lsb") == 0) {
+        sideband = FLEX1500_TX_LSB;
+    } else {
+        return -1;
+    }
+    if (!flex1500_physical_mic_frequency_allowed(
+            tx->frequency_hz, sideband == FLEX1500_TX_USB)) return -1;
+    /* Freeze the complete profile before issuing the first TX command. */
+    tx->mode = tx->api->rx_mode;
+    tx->drive_percent = tx->api->tx_drive_percent;
+    tx->microphone_gain_db = tx->api->tx_microphone_gain_db;
+    int result = flex1500_usb_rx_microphone_tx_start(
+        tx->receiver, sideband, tx->drive_percent,
+        powf(10.0f, (float)tx->microphone_gain_db / 20.0f));
+    if (result == 0 && tx->tune_control != NULL) {
+        ++tx->tune_control->diagnostics.starts;
+    }
+    return result;
+}
+
+static int daemon_tx_owner_stop(void *context, flex1500_tx_owner owner)
+{
+    daemon_tx_context *tx = context;
+    if (owner == FLEX1500_TX_OWNER_TUNE) {
+        return flex1500_usb_rx_tune_carrier_stop(tx->receiver);
+    }
+    if (owner != FLEX1500_TX_OWNER_PHYSICAL_MIC) return -1;
+    const flex1500_tx_audio_stats *stats =
+        flex1500_usb_rx_microphone_tx_stats(tx->receiver);
+    uint64_t underruns = stats != NULL ? stats->underrun_frames : 0;
+    uint64_t clipped = stats != NULL ? stats->clipped_frames : 0;
+    uint64_t dropped = stats != NULL
+        ? stats->dropped_microphone_frames : 0;
+    int result = flex1500_usb_rx_microphone_tx_stop(tx->receiver);
+    if (tx->tune_control != NULL) {
+        ++tx->tune_control->diagnostics.stops;
+        flex1500_tune_control_record_underrun(tx->tune_control, underruns);
+        flex1500_tune_control_record_audio_quality(
+            tx->tune_control, clipped, dropped);
+    }
+    return result;
+}
+
+static void daemon_tx_shutdown(flex1500_tx_control *tx_control,
+                               flex1500_tune_control *tune_control)
+{
+    bool tune_was_active = tune_control != NULL && tune_control->active;
+    flex1500_tx_control_shutdown(tx_control);
+    flex1500_tune_control_reconcile(tune_control, false);
+    if (tune_was_active && tx_control != NULL && tx_control->cleanup_failed) {
+        flex1500_tune_control_record_cleanup_failure(tune_control);
+    }
+}
+
 static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
-                         bool test_page_enabled)
+                         bool test_page_enabled, bool transmit_enabled)
 {
     unsigned long port;
-    int listener = open_loopback_listener(port_text, &port);
+    int listener = open_listener(port_text, &port);
     if (listener < 0) {
-        perror("open loopback listener");
+        perror("open listener");
         return EXIT_FAILURE;
     }
     if (fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK) < 0) {
@@ -357,28 +496,91 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
         close(listener);
         return EXIT_FAILURE;
     }
+    if (transmit_enabled) {
+        usb_result = flex1500_usb_rx_enable_transmit_preparation(receiver);
+        if (usb_result != 0) {
+            fprintf(stderr, "Transmit preparation failed: %s\n",
+                    flex1500_usb_rx_last_error(receiver));
+            flex1500_usb_rx_destroy(receiver);
+            flex1500_iq_ring_destroy(&ring);
+            close(listener);
+            return EXIT_FAILURE;
+        }
+    }
 
     server_stop_requested = 0;
     signal(SIGINT, request_server_stop);
     signal(SIGTERM, request_server_stop);
     printf("[startup] FLEX-1500 initialized; receive-only USB stream active\n");
     printf("[startup] receive gain set to +20 dB\n");
-    printf("[startup] API listening on http://127.0.0.1:%lu (tuning=%s, test-page=%s)\n",
+    printf("[startup] API listening on 0.0.0.0:%lu (unauthenticated, tuning=%s, test-page=%s)\n",
            port, rx_tuning_enabled ? "enabled" : "disabled",
            test_page_enabled ? "enabled" : "disabled");
+    printf("[startup] 5 W Tune API: %s%s\n",
+           transmit_enabled ? "enabled" : "disabled",
+           transmit_enabled ? " (LAN-accessible; unauthenticated)" : "");
     fflush(stdout);
     int iq_client = -1;
     http_client_state http_client = {.fd = -1};
     flex1500_api_controller api;
     flex1500_api_controller_init(&api, rx_tuning_enabled, true,
                                  test_page_enabled);
+    daemon_tx_context tx_context = {
+        .receiver = receiver,
+        .api = &api,
+    };
+    flex1500_tx_control tx_control;
+    flex1500_tx_control_init(
+        &tx_control, transmit_enabled,
+        FLEX1500_TX_TIMEOUT_DEFAULT_SECONDS * UINT64_C(1000), &tx_context,
+                             daemon_tx_owner_start, daemon_tx_owner_stop);
+    if (transmit_enabled) {
+        /* Initialization and TX preparation have established an unkeyed RX
+         * state. The radio reports PTT edges rather than an initial release,
+         * so waiting for a release here would discard the first real press. */
+        flex1500_tx_control_arm_physical_ptt(&tx_control);
+    }
+    flex1500_tune_control tune_control;
+    flex1500_tune_control_init(&tune_control, transmit_enabled, &tx_control);
+    tx_context.tune_control = &tune_control;
+    if (transmit_enabled) {
+        api.tune_control = &tune_control;
+        api.next_tune_lease = initial_tune_lease();
+    }
     api.radio_context = receiver;
     api.tune_rx = api_tune_rx;
     api.set_rx_gain = api_set_rx_gain;
     uint64_t recovery_attempts = 0;
     uint64_t recovery_successes = 0;
+    bool logged_inputs_known = false;
+    flex1500_physical_inputs logged_inputs = {0};
+    bool microphone_ptt_known = false;
+    bool observed_microphone_ptt = false;
 
     while (!server_stop_requested) {
+        flex1500_tune_result tune_tick = flex1500_tune_control_tick(
+            &tune_control, monotonic_ms());
+        if (tune_tick == FLEX1500_TUNE_EXPIRED ||
+            tune_tick == FLEX1500_TUNE_HARD_LIMIT) {
+            printf("[tune] stopped by %s watchdog\n",
+                   flex1500_tune_result_name(tune_tick));
+            fflush(stdout);
+        } else if (tune_tick == FLEX1500_TUNE_HARDWARE_ERROR) {
+            fprintf(stderr, "[tune] watchdog cleanup failed: %s\n",
+                    flex1500_usb_rx_last_error(receiver));
+        }
+        flex1500_tx_control_result tx_tick = flex1500_tx_control_tick(
+            &tx_control, monotonic_ms());
+        flex1500_tune_control_reconcile(
+            &tune_control, tx_tick == FLEX1500_TX_CONTROL_MAX_KEY);
+        if (tx_tick == FLEX1500_TX_CONTROL_MAX_KEY) {
+            printf("[tx] stopped by configurable maximum-key timer\n");
+            fflush(stdout);
+        } else if (tx_tick == FLEX1500_TX_CONTROL_HARDWARE_ERROR) {
+            flex1500_tune_control_record_cleanup_failure(&tune_control);
+            fprintf(stderr, "[tx] maximum-key cleanup failed: %s\n",
+                    flex1500_usb_rx_last_error(receiver));
+        }
         usb_result = flex1500_usb_rx_pump(receiver);
         if (usb_result != 0 || !flex1500_usb_rx_is_running(receiver)) {
             uint32_t restore_frequency = 0;
@@ -394,6 +596,7 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 iq_client = -1;
                 flex1500_iq_publisher_disconnect(&publisher);
             }
+            daemon_tx_shutdown(&tx_control, &tune_control);
             flex1500_usb_rx_stop(receiver);
             fprintf(stderr, "[recovery] receive stopped: %s\n", failure);
             fprintf(stderr,
@@ -420,6 +623,29 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 }
                 flex1500_iq_ring_clear(&ring);
                 ++recovery_successes;
+                if (transmit_enabled &&
+                    flex1500_usb_rx_enable_transmit_preparation(receiver) != 0) {
+                    fprintf(stderr, "[recovery] transmit preparation failed: %s\n",
+                            flex1500_usb_rx_last_error(receiver));
+                    flex1500_usb_rx_stop(receiver);
+                    continue;
+                }
+                flex1500_tx_diagnostics saved_tx_diagnostics =
+                    tune_control.diagnostics;
+                uint32_t saved_tx_timeout =
+                    flex1500_tx_control_timeout_seconds(&tx_control);
+                flex1500_tx_control_init(
+                    &tx_control, transmit_enabled,
+                    (uint64_t)saved_tx_timeout * UINT64_C(1000),
+                    &tx_context,
+                    daemon_tx_owner_start, daemon_tx_owner_stop);
+                if (transmit_enabled) {
+                    flex1500_tx_control_arm_physical_ptt(&tx_control);
+                }
+                flex1500_tune_control_init(&tune_control, transmit_enabled,
+                                           &tx_control);
+                tune_control.diagnostics = saved_tx_diagnostics;
+                microphone_ptt_known = false;
                 recovered = true;
                 printf("[recovery] receive restored (gain=%d dB%s)\n",
                        restore_gain, restore_frequency_known ? ", frequency restored" : "");
@@ -428,6 +654,72 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
             }
             if (!recovered) break;
             continue;
+        }
+
+        flex1500_physical_inputs inputs;
+        if (flex1500_usb_rx_physical_inputs(receiver, &inputs) &&
+            (!logged_inputs_known ||
+             !flex1500_physical_inputs_equal(&inputs, &logged_inputs))) {
+            bool microphone_edge = !microphone_ptt_known ||
+                inputs.mic_ptt != observed_microphone_ptt;
+            printf("[inputs] raw=0x%02x mic_ptt=%s flexwire_ptt=%s dash=%s dot=%s\n",
+                   inputs.raw_status,
+                   inputs.mic_ptt ? "pressed" : "released",
+                   inputs.flexwire_ptt ? "pressed" : "released",
+                   inputs.dash ? "pressed" : "released",
+                   inputs.dot ? "pressed" : "released");
+            fflush(stdout);
+            logged_inputs = inputs;
+            logged_inputs_known = true;
+
+            if (transmit_enabled && microphone_edge) {
+                bool supported_mode = strcmp(api.rx_mode, "usb") == 0 ||
+                                      strcmp(api.rx_mode, "lsb") == 0;
+                uint32_t ptt_frequency = 0;
+                bool frequency_known = flex1500_usb_rx_frequency(
+                    receiver, &ptt_frequency);
+                bool frequency_allowed = supported_mode && frequency_known &&
+                    flex1500_physical_mic_frequency_allowed(
+                        ptt_frequency, strcmp(api.rx_mode, "usb") == 0);
+                flex1500_tx_control_result ptt_result;
+                if (inputs.mic_ptt && tx_control.physical_ptt_armed &&
+                    (!supported_mode || !frequency_known ||
+                     !frequency_allowed)) {
+                    ++tune_control.diagnostics.rejected_ownership_requests;
+                    fprintf(stderr,
+                            "[tx] physical PTT rejected: TX requires USB/LSB and a known frequency inside the configured amateur voice allocations (mode=%s frequency=%s)\n",
+                            api.rx_mode, frequency_known ? "known" : "unset");
+                } else {
+                    ptt_result = flex1500_tx_control_physical_ptt(
+                        &tx_control, inputs.mic_ptt, monotonic_ms());
+                    flex1500_tune_control_reconcile(&tune_control, false);
+                    if (ptt_result == FLEX1500_TX_CONTROL_BUSY ||
+                        ptt_result == FLEX1500_TX_CONTROL_INHIBITED) {
+                        ++tune_control.diagnostics.rejected_ownership_requests;
+                    } else if (ptt_result ==
+                               FLEX1500_TX_CONTROL_HARDWARE_ERROR) {
+                        flex1500_tune_control_record_cleanup_failure(
+                            &tune_control);
+                        fprintf(stderr,
+                                "[tx] physical PTT transition failed: %s\n",
+                                flex1500_usb_rx_last_error(receiver));
+                    } else if (inputs.mic_ptt &&
+                               tx_control.owner ==
+                                   FLEX1500_TX_OWNER_PHYSICAL_MIC) {
+                        printf("[tx] physical microphone keyed at %u Hz %s, drive=%u%%, mic_gain=%u dB\n",
+                               tx_context.frequency_hz, tx_context.mode,
+                               tx_context.drive_percent,
+                               tx_context.microphone_gain_db);
+                    } else if (!inputs.mic_ptt) {
+                        printf("[tx] physical microphone released; RX restored\n");
+                    }
+                    fflush(stdout);
+                }
+            }
+            if (microphone_edge) {
+                observed_microphone_ptt = inputs.mic_ptt;
+                microphone_ptt_known = true;
+            }
         }
 
         if (http_client.fd < 0) {
@@ -460,18 +752,30 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
             bool complete = flex1500_http_request_complete(
                 http_client.request, http_client.length);
             if (complete) {
+                api.request_now_ms = monotonic_ms();
                 flex1500_service_status status = live_service_status(
-                    receiver, &ring, &publisher, recovery_attempts,
+                    receiver, &ring, &publisher, &tune_control,
+                    recovery_attempts,
                     recovery_successes);
-                flex1500_radio_info radio = live_radio_info(receiver);
+                flex1500_radio_info radio = live_radio_info(receiver,
+                                                            transmit_enabled);
                 char response[4096];
                 size_t response_length = 0;
                 uint32_t tuned_frequency = 0;
                 uint32_t tuned_filter = 0;
+                bool tune_was_active = tune_control.active;
                 flex1500_api_action action = flex1500_api_dispatch(
                     &api, http_client.request, &status, &radio, response,
                     sizeof(response), &response_length, &tuned_frequency,
                     &tuned_filter);
+                if (!tune_was_active && tune_control.active) {
+                    printf("[tune] carrier started at %u Hz; nominal 5 W; lease watchdog active\n",
+                           radio.frequency_hz);
+                    fflush(stdout);
+                } else if (tune_was_active && !tune_control.active) {
+                    printf("[tune] carrier stopped by API; RX restored\n");
+                    fflush(stdout);
+                }
                 if (action == FLEX1500_API_TUNED_RX) {
                     printf("[radio] tuned RX to %u Hz; RX filter %u selected\n",
                            tuned_frequency, tuned_filter);
@@ -549,6 +853,34 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
         fprintf(stderr, "Live RX stopped: %s\n",
                 flex1500_usb_rx_last_error(receiver));
     }
+    daemon_tx_shutdown(&tx_control, &tune_control);
+    if (transmit_enabled) {
+        int cleanup_result =
+            flex1500_usb_rx_disable_transmit_preparation(receiver);
+        if (cleanup_result == 0) {
+            printf("[shutdown] TX preparation cleanup confirmed "
+                   "(PA filter 0, amplifier disabled)\n");
+        } else {
+            flex1500_tune_control_record_cleanup_failure(&tune_control);
+            fprintf(stderr,
+                    "[shutdown] TX preparation cleanup failed: %s\n",
+                    flex1500_usb_rx_last_error(receiver));
+        }
+    }
+    const flex1500_tx_diagnostics *tx_diagnostics =
+        flex1500_tune_control_diagnostics(&tune_control);
+    printf("[tx] diagnostics: starts=%llu stops=%llu underruns=%llu "
+           "clipped_frames=%llu dropped_microphone_frames=%llu "
+           "rejected_ownership=%llu watchdog_stops=%llu "
+           "cleanup_failures=%llu\n",
+           (unsigned long long)tx_diagnostics->starts,
+           (unsigned long long)tx_diagnostics->stops,
+           (unsigned long long)tx_diagnostics->underruns,
+           (unsigned long long)tx_diagnostics->clipped_frames,
+           (unsigned long long)tx_diagnostics->dropped_microphone_frames,
+           (unsigned long long)tx_diagnostics->rejected_ownership_requests,
+           (unsigned long long)tx_diagnostics->watchdog_stops,
+           (unsigned long long)tx_diagnostics->cleanup_failures);
     flex1500_usb_rx_destroy(receiver);
     flex1500_iq_ring_destroy(&ring);
     close(listener);
@@ -866,16 +1198,22 @@ int main(int argc, char **argv)
     }
     if (argc == 4 && strcmp(argv[1], "--serve-live-rx") == 0 &&
         strcmp(argv[3], "--initialize-radio") == 0) {
-        return serve_live_rx(argv[2], false, false);
+        return serve_live_rx(argv[2], false, false, false);
     }
     if (argc == 4 && strcmp(argv[1], "--serve-live-rx") == 0 &&
         strcmp(argv[3], "--initialize-radio-and-enable-rx-tuning") == 0) {
-        return serve_live_rx(argv[2], true, false);
+        return serve_live_rx(argv[2], true, false, false);
     }
     if (argc == 5 && strcmp(argv[1], "--serve-live-rx") == 0 &&
         strcmp(argv[3], "--initialize-radio-and-enable-rx-tuning") == 0 &&
         strcmp(argv[4], "--enable-test-page") == 0) {
-        return serve_live_rx(argv[2], true, true);
+        return serve_live_rx(argv[2], true, true, false);
+    }
+    if ((argc == 4 || argc == 5) &&
+        strcmp(argv[1], "--serve-live-rx") == 0 &&
+        strcmp(argv[3], "--initialize-radio-and-enable-transmit") == 0 &&
+        (argc == 4 || strcmp(argv[4], "--enable-test-page") == 0)) {
+        return serve_live_rx(argv[2], true, argc == 5, true);
     }
     print_usage(argv[0]);
     return EXIT_FAILURE;

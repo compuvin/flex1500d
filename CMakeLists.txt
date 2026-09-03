@@ -34,15 +34,13 @@ if(FLEX1500_BUILD_SOAPYSDR)
 endif()
 
 option(FLEX1500_BUILD_TX_RESEARCH
-    "Build minimally tested, dummy-load-only standalone TX research probes"
-    OFF
+    "Build standalone TX research probes (execution remains separately armed)"
+    ON
 )
 if(FLEX1500_BUILD_TX_RESEARCH)
-    message(WARNING
-        "Building minimally tested standalone TX research probes. "
-        "Their arming strings are not security controls. Never execute a TX "
-        "probe without a suitable dummy load and an independently reviewed "
-        "test plan. The flex1500d daemon and API remain receive-only."
+    message(STATUS
+        "Building standalone TX research probes. Their execution arming "
+        "strings are safety interlocks, not security controls."
     )
 endif()
 
@@ -55,14 +53,38 @@ add_library(flex1500_protocol STATIC
     src/protocol.c
     src/web_ui.c
 )
+
+add_library(flex1500_tx_dsp STATIC
+    src/tx_dsp.c
+    src/tx_audio_stream.c
+)
+target_include_directories(flex1500_tx_dsp PUBLIC include)
+target_link_libraries(flex1500_tx_dsp PUBLIC m)
+target_compile_options(flex1500_tx_dsp PRIVATE -Wall -Wextra -Wpedantic)
+
+add_library(flex1500_tune_control STATIC
+    src/tune_control.c
+    src/tx_control.c
+)
+target_include_directories(flex1500_tune_control PUBLIC include)
+target_compile_options(flex1500_tune_control PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(flex1500_protocol PUBLIC flex1500_tune_control)
+
+add_executable(flex1500-mic-iq-offline src/flex1500_mic_iq_offline.c)
+target_link_libraries(flex1500-mic-iq-offline PRIVATE flex1500_tx_dsp m)
+target_compile_options(flex1500-mic-iq-offline PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(flex1500_protocol PUBLIC m)
 target_include_directories(flex1500_protocol PUBLIC include)
 target_compile_options(flex1500_protocol PRIVATE -Wall -Wextra -Wpedantic)
 
-add_library(flex1500_usb_rx STATIC src/usb_rx.c)
+add_library(flex1500_usb_rx STATIC
+    src/usb_rx.c
+    src/tx_lifecycle.c
+)
 target_include_directories(flex1500_usb_rx PUBLIC include)
 target_link_libraries(flex1500_usb_rx PUBLIC
     flex1500_protocol
+    flex1500_tx_dsp
     PkgConfig::LIBUSB
 )
 target_compile_options(flex1500_usb_rx PRIVATE -Wall -Wextra -Wpedantic)
@@ -170,6 +192,89 @@ if(FLEX1500_BUILD_TX_RESEARCH)
     target_compile_options(flex1500-two-tone-tx-probe PRIVATE
         -Wall -Wextra -Wpedantic
     )
+
+    add_executable(flex1500-two-tone-100-tx-probe
+        src/flex1500_zero_iq_tx_probe.c
+    )
+    target_compile_definitions(flex1500-two-tone-100-tx-probe PRIVATE
+        FLEX1500_TWO_TONE_PROBE=1
+        FLEX1500_TWO_TONE_100_PROBE=1
+    )
+    target_link_libraries(flex1500-two-tone-100-tx-probe PRIVATE
+        flex1500_protocol
+        PkgConfig::LIBUSB
+    )
+    target_compile_options(flex1500-two-tone-100-tx-probe PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+
+    add_executable(flex1500-single-tone-tx-probe
+        src/flex1500_zero_iq_tx_probe.c
+    )
+    target_compile_definitions(flex1500-single-tone-tx-probe PRIVATE
+        FLEX1500_TWO_TONE_PROBE=1
+        FLEX1500_SINGLE_TONE_PROBE=1
+    )
+    target_link_libraries(flex1500-single-tone-tx-probe PRIVATE
+        flex1500_protocol
+        PkgConfig::LIBUSB
+    )
+    target_compile_options(flex1500-single-tone-tx-probe PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+
+    add_executable(flex1500-tune-5w-tx-probe
+        src/flex1500_zero_iq_tx_probe.c
+    )
+    target_compile_definitions(flex1500-tune-5w-tx-probe PRIVATE
+        FLEX1500_TWO_TONE_PROBE=1
+        FLEX1500_TUNE_PROBE=1
+    )
+    target_link_libraries(flex1500-tune-5w-tx-probe PRIVATE
+        flex1500_protocol
+        PkgConfig::LIBUSB
+    )
+    target_compile_options(flex1500-tune-5w-tx-probe PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+
+    add_executable(flex1500-mic-capture-tx-probe
+        src/flex1500_zero_iq_tx_probe.c
+    )
+    target_compile_definitions(flex1500-mic-capture-tx-probe PRIVATE
+        FLEX1500_MIC_CAPTURE_PROBE=1
+    )
+    target_link_libraries(flex1500-mic-capture-tx-probe PRIVATE
+        flex1500_protocol
+        PkgConfig::LIBUSB
+    )
+    target_compile_options(flex1500-mic-capture-tx-probe PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+
+    add_executable(flex1500-recorded-speech-tx-probe
+        src/flex1500_zero_iq_tx_probe.c
+    )
+    target_compile_definitions(flex1500-recorded-speech-tx-probe PRIVATE
+        FLEX1500_SPEECH_PLAYBACK_PROBE=1
+    )
+    target_link_libraries(flex1500-recorded-speech-tx-probe PRIVATE
+        flex1500_protocol
+        PkgConfig::LIBUSB
+    )
+    target_compile_options(flex1500-recorded-speech-tx-probe PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+
+    add_executable(flex1500-tx-cleanup-fault-probe
+        src/flex1500_tx_cleanup_fault_probe.c
+    )
+    target_link_libraries(flex1500-tx-cleanup-fault-probe PRIVATE
+        flex1500_usb_rx
+    )
+    target_compile_options(flex1500-tx-cleanup-fault-probe PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
 endif()
 target_link_libraries(flex1500-rx-filter-click-probe PRIVATE
     flex1500_protocol
@@ -225,6 +330,28 @@ if(BUILD_TESTING)
     target_link_libraries(dsp-test PRIVATE flex1500_protocol)
     target_compile_options(dsp-test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME dsp COMMAND dsp-test)
+    add_executable(tx-dsp-test tests/tx_dsp_test.c)
+    target_link_libraries(tx-dsp-test PRIVATE flex1500_tx_dsp m)
+    target_compile_options(tx-dsp-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME tx-dsp COMMAND tx-dsp-test)
+    add_executable(tx-audio-stream-test tests/tx_audio_stream_test.c)
+    target_link_libraries(tx-audio-stream-test PRIVATE flex1500_tx_dsp m)
+    target_compile_options(tx-audio-stream-test PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+    add_test(NAME tx-audio-stream COMMAND tx-audio-stream-test)
+    add_executable(tune-control-test tests/tune_control_test.c)
+    target_link_libraries(tune-control-test PRIVATE flex1500_tune_control)
+    target_compile_options(tune-control-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME tune-control COMMAND tune-control-test)
+    add_executable(tx-control-test tests/tx_control_test.c)
+    target_link_libraries(tx-control-test PRIVATE flex1500_tune_control)
+    target_compile_options(tx-control-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME tx-control COMMAND tx-control-test)
+    add_test(NAME mic-iq-offline-requires-explicit-drive
+        COMMAND flex1500-mic-iq-offline input.pcm output.iq16le usb)
+    set_tests_properties(mic-iq-offline-requires-explicit-drive PROPERTIES
+        WILL_FAIL TRUE)
     add_test(NAME daemon-offline-status COMMAND flex1500d --status)
     add_test(NAME daemon-live-rx-requires-arming-token
         COMMAND flex1500d --serve-live-rx 15000)
@@ -234,13 +361,23 @@ if(BUILD_TESTING)
         COMMAND flex1500d --serve-live-rx 15000 --enable-rx-tuning)
     set_tests_properties(daemon-rx-tuning-requires-exact-arming-token PROPERTIES
         WILL_FAIL TRUE)
-
+    add_test(NAME daemon-transmit-requires-exact-mode-token
+        COMMAND flex1500d --serve-live-rx 15000
+        --initialize-radio-and-enable-tx)
+    set_tests_properties(daemon-transmit-requires-exact-mode-token PROPERTIES
+        WILL_FAIL TRUE)
     add_executable(usb-rx-lifecycle-test tests/usb_rx_lifecycle_test.c)
     target_link_libraries(usb-rx-lifecycle-test PRIVATE flex1500_usb_rx)
     target_compile_options(usb-rx-lifecycle-test PRIVATE
         -Wall -Wextra -Wpedantic
     )
     add_test(NAME usb-rx-lifecycle-offline COMMAND usb-rx-lifecycle-test)
+    add_executable(tx-lifecycle-test tests/tx_lifecycle_test.c)
+    target_link_libraries(tx-lifecycle-test PRIVATE flex1500_usb_rx)
+    target_compile_options(tx-lifecycle-test PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+    add_test(NAME tx-lifecycle-offline COMMAND tx-lifecycle-test)
 
     add_executable(network-protocol-test tests/network_protocol_test.c)
     target_link_libraries(network-protocol-test PRIVATE flex1500_protocol)
@@ -286,6 +423,60 @@ if(BUILD_TESTING)
                 --execute-approved-zero-iq-tx-28475000-50pct-3s)
         set_tests_properties(
             two-tone-tx-probe-rejects-zero-iq-token PROPERTIES
+            WILL_FAIL TRUE
+        )
+        add_test(NAME two-tone-100-tx-probe-default-is-offline
+            COMMAND flex1500-two-tone-100-tx-probe)
+        add_test(NAME two-tone-100-tx-probe-rejects-50pct-token
+            COMMAND flex1500-two-tone-100-tx-probe
+                --execute-approved-two-tone-tx-28475000-50pct-3s)
+        set_tests_properties(
+            two-tone-100-tx-probe-rejects-50pct-token PROPERTIES
+            WILL_FAIL TRUE
+        )
+        add_test(NAME single-tone-tx-probe-default-is-offline
+            COMMAND flex1500-single-tone-tx-probe)
+        add_test(NAME single-tone-tx-probe-rejects-two-tone-token
+            COMMAND flex1500-single-tone-tx-probe
+                --execute-approved-two-tone-100pct-tx-28475000-3s)
+        set_tests_properties(
+            single-tone-tx-probe-rejects-two-tone-token PROPERTIES
+            WILL_FAIL TRUE
+        )
+        add_test(NAME tune-5w-tx-probe-default-is-offline
+            COMMAND flex1500-tune-5w-tx-probe)
+        add_test(NAME tune-5w-tx-probe-rejects-single-tone-token
+            COMMAND flex1500-tune-5w-tx-probe
+                --execute-approved-single-tone-12444-tx-28475000-3s)
+        set_tests_properties(
+            tune-5w-tx-probe-rejects-single-tone-token PROPERTIES
+            WILL_FAIL TRUE
+        )
+        add_test(NAME mic-capture-tx-probe-default-is-offline
+            COMMAND flex1500-mic-capture-tx-probe)
+        add_test(NAME mic-capture-tx-probe-rejects-two-tone-token
+            COMMAND flex1500-mic-capture-tx-probe
+                --execute-approved-two-tone-tx-28475000-50pct-3s)
+        set_tests_properties(
+            mic-capture-tx-probe-rejects-two-tone-token PROPERTIES
+            WILL_FAIL TRUE
+        )
+        add_test(NAME recorded-speech-tx-probe-default-is-offline
+            COMMAND flex1500-recorded-speech-tx-probe)
+        add_test(NAME recorded-speech-tx-probe-rejects-mic-capture-token
+            COMMAND flex1500-recorded-speech-tx-probe
+                --execute-approved-mic-capture-tx-28475000-50pct-3s)
+        set_tests_properties(
+            recorded-speech-tx-probe-rejects-mic-capture-token PROPERTIES
+            WILL_FAIL TRUE
+        )
+        add_test(NAME tx-cleanup-fault-probe-default-is-offline
+            COMMAND flex1500-tx-cleanup-fault-probe)
+        add_test(NAME tx-cleanup-fault-probe-rejects-short-token
+            COMMAND flex1500-tx-cleanup-fault-probe --after-key
+                I-CONFIRM-DUMMY-LOAD)
+        set_tests_properties(
+            tx-cleanup-fault-probe-rejects-short-token PROPERTIES
             WILL_FAIL TRUE
         )
     endif()

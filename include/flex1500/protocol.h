@@ -45,6 +45,14 @@ typedef enum flex1500_rx_antenna {
     FLEX1500_RX_ANTENNA_XVTX_COM = 2,
 } flex1500_rx_antenna;
 
+typedef struct flex1500_physical_inputs {
+    uint8_t raw_status;
+    bool mic_ptt;
+    bool flexwire_ptt;
+    bool dash;
+    bool dot;
+} flex1500_physical_inputs;
+
 #define FLEX1500_MIN_RX_FREQUENCY_HZ UINT32_C(100000)
 #define FLEX1500_MAX_RX_FREQUENCY_HZ UINT32_C(54000000)
 
@@ -66,6 +74,13 @@ const char *flex1500_endpoint_name(uint8_t endpoint);
 /* Decode one little-endian, signed-16-bit interleaved I/Q sample frame. */
 void flex1500_decode_iq_frame(const uint8_t frame[4], int16_t *sample_i,
                               int16_t *sample_q);
+
+/* Endpoint-0x83 physical inputs are active-low in status byte 0. */
+bool flex1500_decode_physical_inputs(const uint8_t *packet,
+                                     size_t packet_length,
+                                     flex1500_physical_inputs *inputs);
+bool flex1500_physical_inputs_equal(const flex1500_physical_inputs *left,
+                                    const flex1500_physical_inputs *right);
 
 /* The first command probe permits this one semantically read-only request. */
 bool flex1500_firmware_read_request_allowed(uint32_t opcode, uint32_t param1,
@@ -109,6 +124,18 @@ bool flex1500_build_rx_antenna_request(
 bool flex1500_build_pa_filter_request(
     uint8_t index, uint32_t filter,
     uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE]);
+bool flex1500_pa_filter_for_frequency(uint32_t frequency_hz,
+                                      uint32_t *filter);
+bool flex1500_physical_mic_frequency_allowed(
+    uint32_t frequency_hz, bool upper_sideband);
+
+/*
+ * PowerSDR's USB/DIGU Tune path offsets the hardware center below the
+ * requested carrier by the generated audio-tone frequency.
+ */
+bool flex1500_usb_tune_frequency_to_tuning_word(uint32_t carrier_hz,
+                                                uint32_t tone_hz,
+                                                uint32_t *tuning_word);
 
 /* Fixed command builders used only by explicitly armed TX experiments. */
 bool flex1500_build_tuning_word_request(

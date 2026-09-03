@@ -5,6 +5,7 @@
 #include "flex1500/protocol.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static uint32_t mode_bandwidth(const char *mode)
@@ -28,6 +29,68 @@ static size_t json_response(const char *status_line, const char *body,
     return (size_t)written;
 }
 
+static bool parse_lease_path(const char *request, const char *prefix,
+                             uint64_t *lease)
+{
+    size_t prefix_length = strlen(prefix);
+    if (strncmp(request, prefix, prefix_length) != 0) return false;
+    const char *start = request + prefix_length;
+    char *end = NULL;
+    unsigned long long value = strtoull(start, &end, 10);
+    if (end == start || value == 0 || strncmp(end, " HTTP/", 6) != 0) {
+        return false;
+    }
+    *lease = (uint64_t)value;
+    return true;
+}
+
+static bool parse_tx_timeout_request(const char *request, uint32_t *seconds)
+{
+    static const char prefix[] = "PUT /v1/radio/tx-timeout/";
+    if (strncmp(request, prefix, sizeof(prefix) - 1) != 0) return false;
+    const char *start = request + sizeof(prefix) - 1;
+    char *end = NULL;
+    unsigned long value = strtoul(start, &end, 10);
+    if (end == start || value > UINT32_MAX ||
+        strncmp(end, " HTTP/", 6) != 0) return false;
+    *seconds = (uint32_t)value;
+    return true;
+}
+
+static bool parse_uint_setting(const char *request, const char *prefix,
+                               uint32_t *value)
+{
+    size_t prefix_length = strlen(prefix);
+    if (strncmp(request, prefix, prefix_length) != 0) return false;
+    const char *start = request + prefix_length;
+    char *end = NULL;
+    unsigned long parsed = strtoul(start, &end, 10);
+    if (end == start || parsed > UINT32_MAX ||
+        strncmp(end, " HTTP/", 6) != 0) return false;
+    *value = (uint32_t)parsed;
+    return true;
+}
+
+static bool transmitter_active(const flex1500_api_controller *controller)
+{
+    return controller->tune_control != NULL &&
+        controller->tune_control->tx_control != NULL &&
+        controller->tune_control->tx_control->owner != FLEX1500_TX_OWNER_NONE;
+}
+
+static size_t tune_error_response(flex1500_tune_result result,
+                                  char *response, size_t capacity)
+{
+    const char *status = result == FLEX1500_TUNE_BUSY ? "409 Conflict" :
+        result == FLEX1500_TUNE_INVALID_LEASE ? "403 Forbidden" :
+        result == FLEX1500_TUNE_DISABLED ? "404 Not Found" :
+        "500 Internal Server Error";
+    char body[128];
+    snprintf(body, sizeof(body), "{\"error\":\"tune_%s\"}\n",
+             flex1500_tune_result_name(result));
+    return json_response(status, body, response, capacity);
+}
+
 void flex1500_api_controller_init(flex1500_api_controller *controller,
                                   bool rx_tuning_enabled,
                                   bool iq_stream_active,
@@ -40,6 +103,9 @@ void flex1500_api_controller_init(flex1500_api_controller *controller,
         .rx_mode = "am",
         .rx_bandwidth_hz = 6000,
         .rx_squelch_db = -120,
+        .tx_drive_percent = 50,
+        .tx_microphone_gain_db = 10,
+        .next_tune_lease = 1,
     };
 }
 
@@ -72,7 +138,160 @@ flex1500_api_action flex1500_api_dispatch(
     int32_t squelch_db = 0;
     const bool squelch_request = flex1500_parse_rx_squelch_request(request, &squelch_db);
     const bool squelch_path = strncmp(request, "PUT /v1/radio/squelch/", 22) == 0;
+    static const char tune_start_prefix[] =
+        "PUT /v1/radio/tune/start HTTP/";
+    static const char tune_path_prefix[] = "PUT /v1/radio/tune/";
+    const bool tune_start = strncmp(
+        request, tune_start_prefix, sizeof(tune_start_prefix) - 1) == 0;
+    const bool tune_path = strncmp(
+        request, tune_path_prefix, sizeof(tune_path_prefix) - 1) == 0;
+    uint64_t tune_lease = 0;
+    const bool tune_keepalive = parse_lease_path(
+        request, "PUT /v1/radio/tune/keepalive/", &tune_lease);
+    uint64_t stop_lease = 0;
+    const bool tune_stop = parse_lease_path(
+        request, "PUT /v1/radio/tune/stop/", &stop_lease);
+    uint32_t tx_timeout_seconds = 0;
+    const bool tx_timeout_request = parse_tx_timeout_request(
+        request, &tx_timeout_seconds);
+    const bool tx_timeout_path = strncmp(
+        request, "PUT /v1/radio/tx-timeout/", 25) == 0;
+    uint32_t tx_drive_percent = 0;
+    static const char tx_drive_prefix[] = "PUT /v1/radio/tx-drive/";
+    const bool tx_drive_request = parse_uint_setting(
+        request, tx_drive_prefix, &tx_drive_percent);
+    const bool tx_drive_path = strncmp(
+        request, tx_drive_prefix, sizeof(tx_drive_prefix) - 1) == 0;
+    uint32_t tx_microphone_gain_db = 0;
+    static const char tx_mic_gain_prefix[] = "PUT /v1/radio/mic-gain/";
+    const bool tx_mic_gain_request = parse_uint_setting(
+        request, tx_mic_gain_prefix, &tx_microphone_gain_db);
+    const bool tx_mic_gain_path = strncmp(
+        request, tx_mic_gain_prefix, sizeof(tx_mic_gain_prefix) - 1) == 0;
 
+    if (tx_drive_path || tx_mic_gain_path) {
+        const bool drive = tx_drive_path;
+        uint32_t value = drive ? tx_drive_percent : tx_microphone_gain_db;
+        bool parsed = drive ? tx_drive_request : tx_mic_gain_request;
+        uint32_t maximum = drive ? 100 : 70;
+        if (!parsed || (drive && value == 0) || value > maximum) {
+            *response_length = json_response(
+                "400 Bad Request", "{\"error\":\"invalid_tx_setting\"}\n",
+                response, capacity);
+        } else if (controller->tune_control == NULL ||
+                   controller->tune_control->tx_control == NULL ||
+                   !controller->tune_control->tx_control->enabled) {
+            *response_length = json_response(
+                "404 Not Found", "{\"error\":\"not found\"}\n",
+                response, capacity);
+        } else if (transmitter_active(controller)) {
+            *response_length = json_response(
+                "409 Conflict", "{\"error\":\"transmitter_active\"}\n",
+                response, capacity);
+        } else {
+            char body[96];
+            if (drive) {
+                controller->tx_drive_percent = value;
+                snprintf(body, sizeof(body),
+                         "{\"tx_drive_percent\":%u}\n", value);
+            } else {
+                controller->tx_microphone_gain_db = value;
+                snprintf(body, sizeof(body),
+                         "{\"tx_microphone_gain_db\":%u}\n", value);
+            }
+            *response_length = json_response("200 OK", body, response,
+                                             capacity);
+        }
+        return FLEX1500_API_RESPONSE;
+    }
+
+    if (tx_timeout_path) {
+        flex1500_tx_control *tx = controller->tune_control != NULL
+            ? controller->tune_control->tx_control : NULL;
+        if (!tx_timeout_request ||
+            tx_timeout_seconds < FLEX1500_TX_TIMEOUT_MIN_SECONDS ||
+            tx_timeout_seconds > FLEX1500_TX_TIMEOUT_MAX_SECONDS) {
+            *response_length = json_response(
+                "400 Bad Request", "{\"error\":\"invalid_tx_timeout\"}\n",
+                response, capacity);
+        } else if (tx == NULL || !tx->enabled) {
+            *response_length = json_response(
+                "404 Not Found", "{\"error\":\"not found\"}\n",
+                response, capacity);
+        } else if (tx->owner != FLEX1500_TX_OWNER_NONE) {
+            *response_length = json_response(
+                "409 Conflict", "{\"error\":\"transmitter_active\"}\n",
+                response, capacity);
+        } else if (!flex1500_tx_control_set_timeout_seconds(
+                       tx, tx_timeout_seconds)) {
+            *response_length = json_response(
+                "500 Internal Server Error",
+                "{\"error\":\"tx_timeout_change_failed\"}\n",
+                response, capacity);
+        } else {
+            char body[96];
+            snprintf(body, sizeof(body), "{\"tx_timeout_seconds\":%u}\n",
+                     tx_timeout_seconds);
+            *response_length = json_response("200 OK", body, response,
+                                             capacity);
+        }
+        return FLEX1500_API_RESPONSE;
+    }
+
+    if (tune_path) {
+        if (controller->tune_control == NULL) {
+            *response_length = json_response(
+                "404 Not Found", "{\"error\":\"not found\"}\n",
+                response, capacity);
+            return FLEX1500_API_RESPONSE;
+        }
+        flex1500_tune_result result = FLEX1500_TUNE_INVALID_LEASE;
+        if (tune_start) {
+            uint64_t lease = controller->next_tune_lease++;
+            if (lease == 0) lease = controller->next_tune_lease++;
+            result = flex1500_tune_control_start(
+                controller->tune_control, controller->request_now_ms, lease);
+            if (result == FLEX1500_TUNE_OK) {
+                char body[192];
+                snprintf(body, sizeof(body),
+                    "{\"tune_active\":true,\"lease\":%llu,"
+                    "\"lease_timeout_ms\":%u,\"hard_limit_ms\":%u}\n",
+                    (unsigned long long)lease, FLEX1500_TUNE_LEASE_MS,
+                    FLEX1500_TUNE_HARD_LIMIT_MS);
+                *response_length = json_response(
+                    "200 OK", body, response, capacity);
+                return FLEX1500_API_RESPONSE;
+            }
+        } else if (tune_keepalive) {
+            result = flex1500_tune_control_keepalive(
+                controller->tune_control, controller->request_now_ms,
+                tune_lease);
+            if (result == FLEX1500_TUNE_OK) {
+                *response_length = json_response(
+                    "200 OK", "{\"tune_active\":true}\n", response,
+                    capacity);
+                return FLEX1500_API_RESPONSE;
+            }
+        } else if (tune_stop) {
+            result = flex1500_tune_control_stop(
+                controller->tune_control, stop_lease);
+            if (result == FLEX1500_TUNE_OK) {
+                *response_length = json_response(
+                    "200 OK", "{\"tune_active\":false}\n", response,
+                    capacity);
+                return FLEX1500_API_RESPONSE;
+            }
+        }
+        *response_length = tune_error_response(result, response, capacity);
+        return FLEX1500_API_RESPONSE;
+    }
+
+    if ((frequency_request || mode_request) && transmitter_active(controller)) {
+        *response_length = json_response(
+            "409 Conflict", "{\"error\":\"transmitter_active\"}\n",
+            response, capacity);
+        return FLEX1500_API_RESPONSE;
+    }
     if (frequency_request && controller->rx_tuning_enabled &&
         controller->tune_rx != NULL) {
         uint32_t mapped_filter = 0;
@@ -150,12 +369,21 @@ flex1500_api_action flex1500_api_dispatch(
     }
 
     char status_json[4096];
-    char radio_json[512];
+    char radio_json[1024];
     flex1500_radio_info presented_radio = *radio;
     presented_radio.rx_tuning_enabled = controller->rx_tuning_enabled;
     presented_radio.rx_mode = controller->rx_mode;
     presented_radio.rx_bandwidth_hz = flex1500_api_rx_bandwidth(controller);
     presented_radio.rx_squelch_db = controller->rx_squelch_db;
+    if (controller->tune_control != NULL &&
+        controller->tune_control->tx_control != NULL) {
+    presented_radio.tx_timeout_seconds =
+            flex1500_tx_control_timeout_seconds(
+                controller->tune_control->tx_control);
+    }
+    presented_radio.tx_drive_percent = controller->tx_drive_percent;
+    presented_radio.tx_microphone_gain_db =
+        controller->tx_microphone_gain_db;
     if (flex1500_build_status_json(status, status_json, sizeof(status_json)) == 0 ||
         flex1500_build_radio_json(&presented_radio, radio_json,
                                   sizeof(radio_json)) == 0) {

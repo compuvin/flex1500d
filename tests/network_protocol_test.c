@@ -43,7 +43,15 @@ int main(void)
         .tx_stops = 10,
         .tx_underruns = 9,
         .tx_clipped_frames = 12,
+        .tx_limited_frames = 14,
         .tx_dropped_microphone_frames = 13,
+        .tx_audio_meter_valid = true,
+        .tx_input_peak_dbfs = -6.0f,
+        .tx_input_rms_dbfs = -18.0f,
+        .tx_post_gain_peak_dbfs = -1.0f,
+        .tx_post_gain_rms_dbfs = -10.0f,
+        .tx_output_peak_dbfs = -6.1f,
+        .tx_output_rms_dbfs = -16.0f,
         .tx_rejected_ownership_requests = 8,
         .tx_watchdog_stops = 7,
         .tx_cleanup_failures = 6,
@@ -61,6 +69,7 @@ int main(void)
         .tx_timeout_seconds = 180,
         .tx_drive_percent = 50,
         .tx_microphone_gain_db = 10,
+        .tx_compressor_enabled = true,
         .rx_tuning_enabled = true,
         .frequency_known = true,
         .frequency_hz = 10000000,
@@ -80,7 +89,7 @@ int main(void)
     const char *page = flex1500_web_ui(&page_length);
 
     CHECK(page != NULL && page_length > 1000);
-    CHECK(strstr(page, "FLEX-1500 receive test") != NULL);
+    CHECK(strstr(page, "FLEX-1500 operator test") != NULL);
     CHECK(strstr(page, "/v1/radio/frequency/") != NULL);
     CHECK(strstr(page, "/v1/stream/iq") != NULL);
     CHECK(strstr(page, "AudioWorkletNode") != NULL);
@@ -93,7 +102,12 @@ int main(void)
     CHECK(strstr(page, "DSP bandwidth") != NULL);
     CHECK(strstr(page, "/v1/radio/mode/") != NULL);
     CHECK(strstr(page, "method:'PUT'") != NULL);
-    CHECK(strstr(page, "PTT control") != NULL);
+    CHECK(strstr(page, "Start computer mic TX") != NULL);
+    CHECK(strstr(page, "/v1/tx/audio") != NULL);
+    CHECK(strstr(page, "window.isSecureContext") != NULL);
+    CHECK(strstr(page, "Start 5 W Tune") != NULL);
+    CHECK(strstr(page, "muteRxForTune(true)") != NULL);
+    CHECK(strstr(page, "browser RX audio restored") != NULL);
     CHECK(strstr(page, "/v1/radio/ptt") == NULL);
     CHECK(strstr(page, "execute-approved") == NULL);
 
@@ -122,6 +136,10 @@ int main(void)
     CHECK(strstr(json, "\"tx_stops\": 10") != NULL);
     CHECK(strstr(json, "\"tx_underruns\": 9") != NULL);
     CHECK(strstr(json, "\"tx_clipped_frames\": 12") != NULL);
+    CHECK(strstr(json, "\"tx_limited_frames\": 14") != NULL);
+    CHECK(strstr(json, "\"tx_audio_meter_valid\": true") != NULL);
+    CHECK(strstr(json, "\"tx_input_peak_dbfs\": -6.0") != NULL);
+    CHECK(strstr(json, "\"tx_output_rms_dbfs\": -16.0") != NULL);
     CHECK(strstr(json,
                  "\"tx_dropped_microphone_frames\": 13") != NULL);
     CHECK(strstr(json,
@@ -145,6 +163,8 @@ int main(void)
     CHECK(strstr(radio_json, "\"tx_drive_percent\": 50") != NULL);
     CHECK(strstr(radio_json,
                  "\"tx_microphone_gain_db\": 10") != NULL);
+    CHECK(strstr(radio_json,
+                 "\"tx_compressor_enabled\": true") != NULL);
     CHECK(strstr(radio_json, "\"pa_filter\": null") != NULL);
     CHECK(strstr(radio_json, "\"rx_tuning_enabled\": true") != NULL);
     CHECK(strstr(radio_json, "\"frequency_hz\": 10000000") != NULL);
@@ -207,6 +227,18 @@ int main(void)
     CHECK(flex1500_http_request_complete(
         "GET /v1/status HTTP/1.1\r\n\r\n", 27));
     CHECK(flex1500_http_request_complete("GET /\n\n", 7));
+    static const char request_body[] =
+        "POST /x HTTP/1.1\r\nContent-Length: 4\r\n\r\ntest";
+    CHECK(!flex1500_http_request_complete(request_body,
+                                           sizeof(request_body) - 3));
+    CHECK(flex1500_http_request_complete(request_body,
+                                          sizeof(request_body) - 1));
+    static const char lowercase_length[] =
+        "POST /v1/tx/audio HTTP/1.1\r\ncontent-length: 4\r\n\r\n1234";
+    CHECK(!flex1500_http_request_complete(lowercase_length,
+                                           sizeof(lowercase_length) - 2));
+    CHECK(flex1500_http_request_complete(lowercase_length,
+                                          sizeof(lowercase_length) - 1));
     uint32_t requested_frequency = 0;
     CHECK(flex1500_parse_rx_frequency_request(
         "PUT /v1/radio/frequency/10000000 HTTP/1.1\r\n\r\n",

@@ -45,7 +45,7 @@ static const flex1500_radio_info RADIO_INFO = {
 
 typedef struct http_client_state {
     int fd;
-    char request[2048];
+    char request[16384];
     size_t length;
 } http_client_state;
 
@@ -92,7 +92,8 @@ static void print_usage(const char *program)
     puts("tuning mode may also send RX-frequency and RX-filter commands.");
     puts("Never run live hardware modes without KB1JDX's explicit permission.");
     puts("Only --initialize-radio-and-enable-transmit prepares the PA path and");
-    puts("enables the nominal 5 W Tune API. Its lease is not authentication.");
+    puts("enables Tune, physical-mic, and leased HTTP audio/IQ TX. Leases");
+    puts("are safety ownership values, not authentication credentials.");
 }
 
 static void print_idle_status(void)
@@ -139,6 +140,42 @@ static int send_all(int socket_fd, const char *data, size_t length)
         sent += (size_t)result;
     }
     return 0;
+}
+
+static const char *tx_api_operation(const char *request)
+{
+    if (strncmp(request, "POST /v1/tx/sessions HTTP/", 26) == 0)
+        return "session acquire";
+    if (strncmp(request, "DELETE /v1/tx/sessions/current HTTP/", 36) == 0)
+        return "session release";
+    if (strncmp(request, "PUT /v1/tx/ptt/start HTTP/", 26) == 0)
+        return "PTT start";
+    if (strncmp(request, "PUT /v1/tx/ptt/stop HTTP/", 25) == 0)
+        return "PTT stop";
+    if (strncmp(request, "CONNECT /v1/tx/stream HTTP/", 27) == 0)
+        return "stream connect";
+    if (strncmp(request, "POST /v1/tx/audio HTTP/", 23) == 0)
+        return "audio chunk";
+    return NULL;
+}
+
+static void log_tx_api_result(const char *request, const char *response,
+                              size_t response_length,
+                              const flex1500_network_tx *tx)
+{
+    const char *operation = tx_api_operation(request);
+    if (operation == NULL) return;
+    const char *status = response_length >= 12 ? response + 9 : "accepted";
+    const bool success = response_length == 0 ||
+        strncmp(status, "200", 3) == 0 || strncmp(status, "201", 3) == 0;
+    /* Successful audio chunks arrive frequently; only log their failures. */
+    if (strcmp(operation, "audio chunk") == 0 && success) return;
+    fprintf(success ? stdout : stderr,
+            "[tx-api] %s -> %.3s; reserved=%s keyed=%s stream=%s\n",
+            operation, status, tx->reserved ? "yes" : "no",
+            tx->keyed ? "yes" : "no",
+            tx->stream_connected ? "yes" : "no");
+    fflush(success ? stdout : stderr);
 }
 
 static int send_web_ui(int socket_fd)
@@ -278,6 +315,11 @@ static int api_set_rx_gain(void *context, int32_t gain_db)
     return flex1500_usb_rx_set_gain(context, gain_db) == 0 ? 0 : -1;
 }
 
+static float meter_dbfs(float linear)
+{
+    return linear > 0.000001f ? 20.0f * log10f(linear) : -120.0f;
+}
+
 static flex1500_service_status live_service_status(
     const flex1500_usb_rx *receiver, const flex1500_iq_ring *ring,
     const flex1500_iq_publisher *publisher,
@@ -289,6 +331,9 @@ static flex1500_service_status live_service_status(
     const flex1500_iq_stats *iq = flex1500_usb_rx_get_iq_stats(receiver);
     const flex1500_tx_diagnostics *tx =
         flex1500_tune_control_diagnostics(tune_control);
+    const flex1500_tx_audio_stats *audio =
+        flex1500_usb_rx_microphone_tx_stats(receiver);
+    bool meter_valid = audio != NULL && audio->microphone_frames != 0;
     return (flex1500_service_status){
         .state = "receiving", .radio_open = true, .network_listening = true,
         .sample_rate = 48000, .frames = iq->frames,
@@ -335,8 +380,22 @@ static flex1500_service_status live_service_status(
         .tx_stops = tx != NULL ? tx->stops : 0,
         .tx_underruns = tx != NULL ? tx->underruns : 0,
         .tx_clipped_frames = tx != NULL ? tx->clipped_frames : 0,
+        .tx_limited_frames = audio != NULL ? audio->limited_frames : 0,
         .tx_dropped_microphone_frames =
             tx != NULL ? tx->dropped_microphone_frames : 0,
+        .tx_audio_meter_valid = meter_valid,
+        .tx_input_peak_dbfs = meter_valid
+            ? meter_dbfs(audio->input_peak) : -120.0f,
+        .tx_input_rms_dbfs = meter_valid
+            ? meter_dbfs(audio->input_rms) : -120.0f,
+        .tx_post_gain_peak_dbfs = meter_valid
+            ? meter_dbfs(audio->post_gain_peak) : -120.0f,
+        .tx_post_gain_rms_dbfs = meter_valid
+            ? meter_dbfs(audio->post_gain_rms) : -120.0f,
+        .tx_output_peak_dbfs = meter_valid
+            ? meter_dbfs(audio->output_peak) : -120.0f,
+        .tx_output_rms_dbfs = meter_valid
+            ? meter_dbfs(audio->output_rms) : -120.0f,
         .tx_rejected_ownership_requests =
             tx != NULL ? tx->rejected_ownership_requests : 0,
         .tx_watchdog_stops = tx != NULL ? tx->watchdog_stops : 0,
@@ -379,13 +438,46 @@ typedef struct daemon_tx_context {
     const char *mode;
     uint32_t drive_percent;
     uint32_t microphone_gain_db;
+    bool compressor_enabled;
+    flex1500_network_tx *network_tx;
+    uint8_t network_prebuffer[131072];
+    size_t network_prebuffer_bytes;
+    uint8_t network_tail[4];
+    size_t network_tail_bytes;
 } daemon_tx_context;
 
 static int daemon_tx_owner_start(void *context, flex1500_tx_owner owner)
 {
     daemon_tx_context *tx = context;
     if (owner == FLEX1500_TX_OWNER_TUNE) {
+        if (!flex1500_usb_rx_frequency(tx->receiver, &tx->frequency_hz) ||
+            !flex1500_tune_frequency_allowed(tx->frequency_hz)) {
+            return -1;
+        }
         return flex1500_usb_rx_tune_carrier_start(tx->receiver);
+    }
+    if (owner == FLEX1500_TX_OWNER_HTTP && tx->network_tx != NULL &&
+        tx->network_tx->reserved &&
+        flex1500_usb_rx_frequency(tx->receiver, &tx->frequency_hz)) {
+        bool raw_iq = tx->network_tx->profile.source == FLEX1500_NETWORK_TX_IQ;
+        flex1500_tx_sideband sideband =
+            tx->network_tx->profile.mode == FLEX1500_NETWORK_TX_LSB
+                ? FLEX1500_TX_LSB : FLEX1500_TX_USB;
+        bool frequency_allowed = raw_iq
+            ? flex1500_network_iq_frequency_allowed(tx->frequency_hz)
+            : flex1500_physical_mic_frequency_allowed(
+                  tx->frequency_hz, sideband == FLEX1500_TX_USB);
+        if (!frequency_allowed) return -1;
+        int result = flex1500_usb_rx_network_tx_start(
+            tx->receiver, sideband, tx->network_tx->profile.drive_percent,
+            raw_iq, tx->network_prebuffer, tx->network_prebuffer_bytes);
+        if (result == 0) {
+            tx->network_prebuffer_bytes = 0;
+            if (tx->tune_control != NULL) {
+                ++tx->tune_control->diagnostics.starts;
+            }
+        }
+        return result;
     }
     if (owner != FLEX1500_TX_OWNER_PHYSICAL_MIC || tx->api == NULL ||
         !flex1500_usb_rx_frequency(tx->receiver, &tx->frequency_hz)) {
@@ -405,9 +497,11 @@ static int daemon_tx_owner_start(void *context, flex1500_tx_owner owner)
     tx->mode = tx->api->rx_mode;
     tx->drive_percent = tx->api->tx_drive_percent;
     tx->microphone_gain_db = tx->api->tx_microphone_gain_db;
+    tx->compressor_enabled = tx->api->tx_compressor_enabled;
     int result = flex1500_usb_rx_microphone_tx_start(
         tx->receiver, sideband, tx->drive_percent,
-        powf(10.0f, (float)tx->microphone_gain_db / 20.0f));
+        powf(10.0f, (float)tx->microphone_gain_db / 20.0f),
+        tx->compressor_enabled);
     if (result == 0 && tx->tune_control != NULL) {
         ++tx->tune_control->diagnostics.starts;
     }
@@ -420,7 +514,8 @@ static int daemon_tx_owner_stop(void *context, flex1500_tx_owner owner)
     if (owner == FLEX1500_TX_OWNER_TUNE) {
         return flex1500_usb_rx_tune_carrier_stop(tx->receiver);
     }
-    if (owner != FLEX1500_TX_OWNER_PHYSICAL_MIC) return -1;
+    if (owner != FLEX1500_TX_OWNER_PHYSICAL_MIC &&
+        owner != FLEX1500_TX_OWNER_HTTP) return -1;
     const flex1500_tx_audio_stats *stats =
         flex1500_usb_rx_microphone_tx_stats(tx->receiver);
     uint64_t underruns = stats != NULL ? stats->underrun_frames : 0;
@@ -521,6 +616,7 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
            transmit_enabled ? " (LAN-accessible; unauthenticated)" : "");
     fflush(stdout);
     int iq_client = -1;
+    int tx_client = -1;
     http_client_state http_client = {.fd = -1};
     flex1500_api_controller api;
     flex1500_api_controller_init(&api, rx_tuning_enabled, true,
@@ -543,9 +639,14 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
     flex1500_tune_control tune_control;
     flex1500_tune_control_init(&tune_control, transmit_enabled, &tx_control);
     tx_context.tune_control = &tune_control;
+    flex1500_network_tx network_tx;
+    flex1500_network_tx_init(&network_tx, transmit_enabled, &tx_control);
+    tx_context.network_tx = &network_tx;
     if (transmit_enabled) {
         api.tune_control = &tune_control;
         api.next_tune_lease = initial_tune_lease();
+        api.next_tx_lease = initial_tune_lease();
+        api.network_tx = &network_tx;
     }
     api.radio_context = receiver;
     api.tune_rx = api_tune_rx;
@@ -581,6 +682,29 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
             fprintf(stderr, "[tx] maximum-key cleanup failed: %s\n",
                     flex1500_usb_rx_last_error(receiver));
         }
+        bool network_was_reserved = network_tx.reserved;
+        flex1500_network_tx_reconcile(&network_tx);
+        if (network_was_reserved && !network_tx.reserved && tx_client >= 0) {
+            close(tx_client);
+            tx_client = -1;
+            tx_context.network_prebuffer_bytes = 0;
+            printf("[tx] HTTP session invalidated by owner transition\n");
+        }
+        flex1500_network_tx_result network_tick = flex1500_network_tx_tick(
+            &network_tx, monotonic_ms());
+        if (network_tick == FLEX1500_NETWORK_TX_EXPIRED ||
+            network_tick == FLEX1500_NETWORK_TX_DATA_TIMEOUT) {
+            ++tune_control.diagnostics.watchdog_stops;
+            if (tx_client >= 0) close(tx_client);
+            tx_client = -1;
+            tx_context.network_prebuffer_bytes = 0;
+            printf("[tx] HTTP session stopped by %s watchdog\n",
+                   flex1500_network_tx_result_name(network_tick));
+        } else if (network_tick == FLEX1500_NETWORK_TX_HARDWARE_ERROR) {
+            flex1500_tune_control_record_cleanup_failure(&tune_control);
+            fprintf(stderr, "[tx] HTTP watchdog cleanup failed: %s\n",
+                    flex1500_usb_rx_last_error(receiver));
+        }
         usb_result = flex1500_usb_rx_pump(receiver);
         if (usb_result != 0 || !flex1500_usb_rx_is_running(receiver)) {
             uint32_t restore_frequency = 0;
@@ -596,6 +720,13 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 iq_client = -1;
                 flex1500_iq_publisher_disconnect(&publisher);
             }
+            if (tx_client >= 0) {
+                close(tx_client);
+                tx_client = -1;
+            }
+            (void)flex1500_network_tx_disconnect_stream(&network_tx);
+            (void)flex1500_network_tx_release(&network_tx, network_tx.lease);
+            tx_context.network_prebuffer_bytes = 0;
             daemon_tx_shutdown(&tx_control, &tune_control);
             flex1500_usb_rx_stop(receiver);
             fprintf(stderr, "[recovery] receive stopped: %s\n", failure);
@@ -644,6 +775,8 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 }
                 flex1500_tune_control_init(&tune_control, transmit_enabled,
                                            &tx_control);
+                flex1500_network_tx_init(&network_tx, transmit_enabled,
+                                         &tx_control);
                 tune_control.diagnostics = saved_tx_diagnostics;
                 microphone_ptt_known = false;
                 recovered = true;
@@ -768,6 +901,14 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                     &api, http_client.request, &status, &radio, response,
                     sizeof(response), &response_length, &tuned_frequency,
                     &tuned_filter);
+                log_tx_api_result(http_client.request, response,
+                                  response_length, &network_tx);
+                if (!network_tx.reserved && tx_client >= 0) {
+                    close(tx_client);
+                    tx_client = -1;
+                    tx_context.network_prebuffer_bytes = 0;
+                    tx_context.network_tail_bytes = 0;
+                }
                 if (!tune_was_active && tune_control.active) {
                     printf("[tune] carrier started at %u Hz; nominal 5 W; lease watchdog active\n",
                            radio.frequency_hz);
@@ -775,6 +916,14 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 } else if (tune_was_active && !tune_control.active) {
                     printf("[tune] carrier stopped by API; RX restored\n");
                     fflush(stdout);
+                } else if (strncmp(http_client.request,
+                                   "PUT /v1/radio/tune/", 19) == 0 &&
+                           (response_length < 12 ||
+                            (strncmp(response + 9, "200", 3) != 0 &&
+                             strncmp(response + 9, "201", 3) != 0))) {
+                    fprintf(stderr, "[tune] API request rejected -> %.3s\n",
+                            response_length >= 12 ? response + 9 : "---");
+                    fflush(stderr);
                 }
                 if (action == FLEX1500_API_TUNED_RX) {
                     printf("[radio] tuned RX to %u Hz; RX filter %u selected\n",
@@ -804,6 +953,40 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                     printf("[stream] IQ client connected\n");
                     fflush(stdout);
                 }
+                } else if (action == FLEX1500_API_OPEN_TX_STREAM) {
+                    static const char tx_header[] =
+                        "HTTP/1.1 200 Connection Established\r\n"
+                        "Content-Type: application/octet-stream\r\n"
+                        "Cache-Control: no-store\r\n\r\n";
+                    if (tx_client >= 0) close(tx_client);
+                    tx_context.network_prebuffer_bytes = 0;
+                    if (send_all(http_client.fd, tx_header,
+                                 sizeof(tx_header) - 1) == 0) {
+                        tx_client = http_client.fd;
+                        http_client.fd = -1;
+                        printf("[tx] HTTP sample stream connected\n");
+                    }
+                } else if (action == FLEX1500_API_PUSH_TX_AUDIO) {
+                    const char *body = strstr(http_client.request, "\r\n\r\n");
+                    size_t bytes = body != NULL
+                        ? http_client.length - (size_t)(body + 4 - http_client.request)
+                        : 0;
+                    body = body != NULL ? body + 4 : NULL;
+                    if (body != NULL && bytes != 0) {
+                        if (!network_tx.keyed) {
+                            size_t room = sizeof(tx_context.network_prebuffer) -
+                                tx_context.network_prebuffer_bytes;
+                            if (bytes > room) bytes = room;
+                            memcpy(tx_context.network_prebuffer +
+                                   tx_context.network_prebuffer_bytes,
+                                   body, bytes);
+                            tx_context.network_prebuffer_bytes += bytes;
+                        } else {
+                            (void)flex1500_usb_rx_network_tx_push(
+                                receiver, (const uint8_t *)body, bytes, false);
+                        }
+                    }
+                    send_all(http_client.fd, response, response_length);
                 } else if (action == FLEX1500_API_SERVE_TEST_PAGE) {
                     send_web_ui(http_client.fd);
                     printf("[http] served receive test page\n");
@@ -824,6 +1007,48 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 close(http_client.fd);
                 http_client.fd = -1;
                 http_client.length = 0;
+            }
+        }
+
+        if (tx_client >= 0) {
+            uint8_t data[8192 + 4];
+            memcpy(data, tx_context.network_tail,
+                   tx_context.network_tail_bytes);
+            ssize_t received = recv(tx_client,
+                data + tx_context.network_tail_bytes,
+                sizeof(data) - tx_context.network_tail_bytes, 0);
+            if (received > 0) {
+                bool raw_iq = network_tx.profile.source == FLEX1500_NETWORK_TX_IQ;
+                size_t frame_bytes = raw_iq ? 4 : 2;
+                size_t total = (size_t)received + tx_context.network_tail_bytes;
+                size_t bytes = total - total % frame_bytes;
+                tx_context.network_tail_bytes = total - bytes;
+                if (tx_context.network_tail_bytes != 0) {
+                    memcpy(tx_context.network_tail, data + bytes,
+                           tx_context.network_tail_bytes);
+                }
+                if (!network_tx.keyed) {
+                    size_t room = sizeof(tx_context.network_prebuffer) -
+                                  tx_context.network_prebuffer_bytes;
+                    if (bytes > room) bytes = room;
+                    memcpy(tx_context.network_prebuffer +
+                           tx_context.network_prebuffer_bytes, data, bytes);
+                    tx_context.network_prebuffer_bytes += bytes;
+                } else {
+                    (void)flex1500_usb_rx_network_tx_push(receiver, data,
+                                                          bytes, raw_iq);
+                }
+                (void)flex1500_network_tx_record_data(
+                    &network_tx, network_tx.lease, bytes / frame_bytes,
+                    monotonic_ms());
+            } else if (received == 0 ||
+                       (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                close(tx_client);
+                tx_client = -1;
+                (void)flex1500_network_tx_disconnect_stream(&network_tx);
+                tx_context.network_prebuffer_bytes = 0;
+                tx_context.network_tail_bytes = 0;
+                printf("[tx] HTTP sample stream disconnected; unkey requested\n");
             }
         }
 
@@ -848,6 +1073,7 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
     }
 
     if (iq_client >= 0) close(iq_client);
+    if (tx_client >= 0) close(tx_client);
     if (http_client.fd >= 0) close(http_client.fd);
     if (!server_stop_requested) {
         fprintf(stderr, "Live RX stopped: %s\n",

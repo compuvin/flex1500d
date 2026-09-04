@@ -4,6 +4,7 @@
 #define FLEX1500_API_H
 
 #include "flex1500/network.h"
+#include "flex1500/network_tx.h"
 #include "flex1500/tune_control.h"
 
 #include <stdbool.h>
@@ -22,18 +23,23 @@ typedef struct flex1500_api_controller {
     int32_t rx_squelch_db;
     uint32_t tx_drive_percent;
     uint32_t tx_microphone_gain_db;
+    bool tx_compressor_enabled;
     void *radio_context;
     flex1500_api_tune_rx tune_rx;
     flex1500_api_set_rx_gain set_rx_gain;
     flex1500_tune_control *tune_control;
     uint64_t request_now_ms;
     uint64_t next_tune_lease;
+    uint64_t next_tx_lease;
+    flex1500_network_tx *network_tx;
 } flex1500_api_controller;
 
 typedef enum flex1500_api_action {
     FLEX1500_API_RESPONSE,
     FLEX1500_API_OPEN_IQ_STREAM,
     FLEX1500_API_SERVE_TEST_PAGE,
+    FLEX1500_API_OPEN_TX_STREAM,
+    FLEX1500_API_PUSH_TX_AUDIO,
     FLEX1500_API_TUNED_RX,
     FLEX1500_API_RX_TUNE_FAILED,
 } flex1500_api_action;

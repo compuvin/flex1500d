@@ -70,6 +70,11 @@ int main(void)
     CHECK(flex1500_tx_control_request(&control, FLEX1500_TX_OWNER_HTTP, 1001) ==
           FLEX1500_TX_CONTROL_BUSY);
 
+    /* A non-owner cannot release or otherwise disturb the current owner. */
+    CHECK(flex1500_tx_control_release(&control, FLEX1500_TX_OWNER_SOAPY) ==
+          FLEX1500_TX_CONTROL_BUSY);
+    CHECK(control.owner == FLEX1500_TX_OWNER_TUNE && calls.stops == 0);
+
     /* Physical PTT safely stops and preempts the remote Tune owner. */
     CHECK(flex1500_tx_control_physical_ptt(&control, true, 2000) ==
           FLEX1500_TX_CONTROL_OK);
@@ -89,6 +94,20 @@ int main(void)
     CHECK(flex1500_tx_control_tick(&control, 183000) ==
           FLEX1500_TX_CONTROL_MAX_KEY);
     CHECK(control.owner == FLEX1500_TX_OWNER_NONE);
+
+    /* Disconnect handling uses release for the connection-bound owner. */
+    CHECK(flex1500_tx_control_request(&control, FLEX1500_TX_OWNER_HTTP,
+                                      200000) == FLEX1500_TX_CONTROL_OK);
+    CHECK(flex1500_tx_control_release(&control, FLEX1500_TX_OWNER_HTTP) ==
+          FLEX1500_TX_CONTROL_OK);
+    CHECK(control.owner == FLEX1500_TX_OWNER_NONE);
+    CHECK(calls.last_stopped == FLEX1500_TX_OWNER_HTTP);
+
+    CHECK(flex1500_tx_control_request(&control, FLEX1500_TX_OWNER_SOAPY,
+                                      210000) == FLEX1500_TX_CONTROL_OK);
+    flex1500_tx_control_shutdown(&control);
+    CHECK(control.owner == FLEX1500_TX_OWNER_NONE);
+    CHECK(calls.last_stopped == FLEX1500_TX_OWNER_SOAPY);
 
     calls.start_result = -1;
     CHECK(flex1500_tx_control_request(&control, FLEX1500_TX_OWNER_HTTP, 40000) ==

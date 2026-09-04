@@ -10,6 +10,7 @@
 #include <complex>
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -26,7 +27,7 @@ int main(int argc, char **argv)
     CHECK(device != nullptr);
     CHECK(device->getDriverKey() == "flex1500");
     CHECK(device->getNumChannels(SOAPY_SDR_RX) == 1);
-    CHECK(device->getNumChannels(SOAPY_SDR_TX) == 0);
+    CHECK(device->getNumChannels(SOAPY_SDR_TX) == 1);
     CHECK(device->getHardwareInfo().at("daemon_transmit_enabled") == "true");
     CHECK(device->getSampleRate(SOAPY_SDR_RX, 0) == 48000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_RX, 0).front().minimum() == 100000.0);
@@ -76,7 +77,35 @@ int main(int argc, char **argv)
     CHECK(integerSamples[4] == 500 && integerSamples[5] == 600);
     CHECK(device->deactivateStream(stream) == 0);
     device->closeStream(stream);
+
+    CHECK(device->getSampleRate(SOAPY_SDR_TX, 0) == 48000.0);
+    CHECK(device->getBandwidth(SOAPY_SDR_TX, 0) == 48000.0);
+    CHECK(device->getFrequencyRange(SOAPY_SDR_TX, 0).size() == 9);
+    double fullScale = 0.0;
+    CHECK(device->getNativeStreamFormat(SOAPY_SDR_TX, 0, fullScale) ==
+          SOAPY_SDR_CS16);
+    bool rejected = false;
+    try {
+        device->setFrequency(SOAPY_SDR_TX, 0, 15000000.0);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    CHECK(rejected);
+    device->setFrequency(SOAPY_SDR_TX, 0, 7100000.0);
+    device->setGain(SOAPY_SDR_TX, 0, 75.0);
+    CHECK(device->getGain(SOAPY_SDR_TX, 0) == 75.0);
+    stream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CF32);
+    CHECK(stream != nullptr);
+    CHECK(device->activateStream(stream) == 0);
+    std::vector<std::complex<float>> txSamples(25000, {0.25f, 0.5f});
+    const void *txBuffers[] = {txSamples.data()};
+    flags = 0;
+    CHECK(device->writeStream(stream, txBuffers, txSamples.size(), flags,
+                              timeNs, 1000000) ==
+          static_cast<int>(txSamples.size()));
+    CHECK(device->deactivateStream(stream) == 0);
+    device->closeStream(stream);
     SoapySDR::Device::unmake(device);
-    std::cout << "receive-only SoapySDR adapter test passed\n";
+    std::cout << "SoapySDR RX/TX adapter test passed\n";
     return EXIT_SUCCESS;
 }

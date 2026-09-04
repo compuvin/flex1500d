@@ -8,6 +8,7 @@
 #include "flex1500/tx_audio_stream.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct flex1500_usb_rx flex1500_usb_rx;
@@ -82,10 +83,19 @@ bool flex1500_usb_rx_tune_carrier_active(const flex1500_usb_rx *receiver);
 int flex1500_usb_rx_microphone_tx_start(flex1500_usb_rx *receiver,
                                        flex1500_tx_sideband sideband,
                                        unsigned int drive_percent,
-                                       float microphone_gain);
+                                       float microphone_gain,
+                                       bool compressor_enabled);
 int flex1500_usb_rx_microphone_tx_stop(flex1500_usb_rx *receiver);
 const flex1500_tx_audio_stats *flex1500_usb_rx_microphone_tx_stats(
     const flex1500_usb_rx *receiver);
+int flex1500_usb_rx_network_tx_start(flex1500_usb_rx *receiver,
+                                     flex1500_tx_sideband sideband,
+                                     unsigned int drive_percent,
+                                     bool raw_iq, const uint8_t *prebuffer,
+                                     size_t bytes);
+size_t flex1500_usb_rx_network_tx_push(flex1500_usb_rx *receiver,
+                                      const uint8_t *data, size_t bytes,
+                                      bool raw_iq);
 
 typedef enum flex1500_tx_fault_stage {
     FLEX1500_TX_FAULT_NONE = 0,

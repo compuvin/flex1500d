@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 static uint32_t mode_bandwidth(const char *mode)
 {
@@ -78,6 +79,90 @@ static bool transmitter_active(const flex1500_api_controller *controller)
         controller->tune_control->tx_control->owner != FLEX1500_TX_OWNER_NONE;
 }
 
+static bool request_is(const char *request, const char *method,
+                       const char *path)
+{
+    char prefix[160];
+    int n = snprintf(prefix, sizeof(prefix), "%s %s HTTP/", method, path);
+    return n > 0 && (size_t)n < sizeof(prefix) &&
+           strncmp(request, prefix, (size_t)n) == 0;
+}
+
+static const char *request_header(const char *request, const char *name)
+{
+    const size_t name_length = strlen(name);
+    const char *line = request;
+    while (line != NULL && *line != '\0') {
+        const char *next = strstr(line, "\r\n");
+        if (next == NULL || next == line) break;
+        if (strncasecmp(line, name, name_length) == 0 &&
+            line[name_length] == ':') {
+            const char *value = line + name_length + 1;
+            while (*value == ' ' || *value == '\t') ++value;
+            return value;
+        }
+        line = next + 2;
+    }
+    return NULL;
+}
+
+static bool request_lease(const char *request, uint64_t *lease)
+{
+    const char *value = request_header(request, "X-Flex1500-TX-Lease");
+    if (value == NULL) return false;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    if (end == value || parsed == 0 || (*end != '\r' && *end != '\n')) {
+        return false;
+    }
+    *lease = (uint64_t)parsed;
+    return true;
+}
+
+static bool parse_tx_profile(const char *request,
+                             flex1500_network_tx_profile *profile)
+{
+    const char *body = strstr(request, "\r\n\r\n");
+    if (body == NULL) return false;
+    body += 4;
+    const char *mode = strstr(body, "\"mode\":");
+    const char *source = strstr(body, "\"source\":");
+    const char *drive = strstr(body, "\"drive_percent\":");
+    const char *rate = strstr(body, "\"sample_rate\":");
+    const char *format = strstr(body, "\"sample_format\":");
+    const char *channels = strstr(body, "\"channels\":");
+    if (mode == NULL || source == NULL || drive == NULL || rate == NULL ||
+        format == NULL || channels == NULL) {
+        return false;
+    }
+    char mode_text[8] = {0}, source_text[8] = {0}, format_text[8] = {0};
+    unsigned int drive_value = 0, rate_value = 0, channel_value = 0;
+    if (sscanf(mode, "\"mode\": \"%7[a-z]\"", mode_text) != 1 &&
+        sscanf(mode, "\"mode\":\"%7[a-z]\"", mode_text) != 1) return false;
+    if (sscanf(source, "\"source\": \"%7[a-z]\"", source_text) != 1 &&
+        sscanf(source, "\"source\":\"%7[a-z]\"", source_text) != 1) return false;
+    if (sscanf(drive, "\"drive_percent\": %u", &drive_value) != 1 &&
+        sscanf(drive, "\"drive_percent\":%u", &drive_value) != 1) return false;
+    if (sscanf(rate, "\"sample_rate\": %u", &rate_value) != 1 &&
+        sscanf(rate, "\"sample_rate\":%u", &rate_value) != 1) return false;
+    if (sscanf(format, "\"sample_format\": \"%7[a-z0-9]\"", format_text) != 1 &&
+        sscanf(format, "\"sample_format\":\"%7[a-z0-9]\"", format_text) != 1) return false;
+    if (sscanf(channels, "\"channels\": %u", &channel_value) != 1 &&
+        sscanf(channels, "\"channels\":%u", &channel_value) != 1) return false;
+    profile->mode = strcmp(mode_text, "usb") == 0 ? FLEX1500_NETWORK_TX_USB :
+        strcmp(mode_text, "lsb") == 0 ? FLEX1500_NETWORK_TX_LSB :
+        FLEX1500_NETWORK_TX_IQ_MODE;
+    profile->source = strcmp(source_text, "audio") == 0
+        ? FLEX1500_NETWORK_TX_AUDIO : FLEX1500_NETWORK_TX_IQ;
+    profile->drive_percent = drive_value;
+    profile->sample_rate = rate_value;
+    return (strcmp(mode_text, "usb") == 0 || strcmp(mode_text, "lsb") == 0 ||
+            strcmp(mode_text, "iq") == 0) &&
+           (strcmp(source_text, "audio") == 0 || strcmp(source_text, "iq") == 0) &&
+           ((strcmp(source_text, "audio") == 0 && strcmp(format_text, "s16le") == 0 && channel_value == 1) ||
+            (strcmp(source_text, "iq") == 0 && strcmp(format_text, "cs16le") == 0 && channel_value == 1));
+}
+
 static size_t tune_error_response(flex1500_tune_result result,
                                   char *response, size_t capacity)
 {
@@ -103,9 +188,10 @@ void flex1500_api_controller_init(flex1500_api_controller *controller,
         .rx_mode = "am",
         .rx_bandwidth_hz = 6000,
         .rx_squelch_db = -120,
-        .tx_drive_percent = 50,
+        .tx_drive_percent = FLEX1500_TX_DEFAULT_DRIVE_PERCENT,
         .tx_microphone_gain_db = 10,
         .next_tune_lease = 1,
+        .next_tx_lease = 1,
     };
 }
 
@@ -168,13 +254,163 @@ flex1500_api_action flex1500_api_dispatch(
         request, tx_mic_gain_prefix, &tx_microphone_gain_db);
     const bool tx_mic_gain_path = strncmp(
         request, tx_mic_gain_prefix, sizeof(tx_mic_gain_prefix) - 1) == 0;
+    static const char tx_compressor_prefix[] =
+        "PUT /v1/radio/tx-compressor/";
+    static const char tx_compressor_on_prefix[] =
+        "PUT /v1/radio/tx-compressor/on HTTP/";
+    static const char tx_compressor_off_prefix[] =
+        "PUT /v1/radio/tx-compressor/off HTTP/";
+    const bool tx_compressor_on = strncmp(
+        request, tx_compressor_on_prefix,
+        sizeof(tx_compressor_on_prefix) - 1) == 0;
+    const bool tx_compressor_off = strncmp(
+        request, tx_compressor_off_prefix,
+        sizeof(tx_compressor_off_prefix) - 1) == 0;
+    const bool tx_compressor_path = strncmp(
+        request, tx_compressor_prefix, sizeof(tx_compressor_prefix) - 1) == 0;
+
+    const bool tx_session_create = request_is(request, "POST", "/v1/tx/sessions");
+    const bool tx_keepalive = request_is(request, "PUT", "/v1/tx/sessions/keepalive");
+    const bool tx_stream = request_is(request, "CONNECT", "/v1/tx/stream");
+    const bool tx_audio = request_is(request, "POST", "/v1/tx/audio");
+    const bool tx_ptt_start = request_is(request, "PUT", "/v1/tx/ptt/start");
+    const bool tx_ptt_stop = request_is(request, "PUT", "/v1/tx/ptt/stop");
+    const bool tx_release = request_is(request, "DELETE", "/v1/tx/sessions/current");
+    const bool tx_general_path = strncmp(request, "POST /v1/tx/", 12) == 0 ||
+        strncmp(request, "PUT /v1/tx/", 11) == 0 ||
+        strncmp(request, "CONNECT /v1/tx/", 15) == 0 ||
+        strncmp(request, "DELETE /v1/tx/", 14) == 0;
+
+    if (tx_general_path) {
+        if (controller->network_tx == NULL || !controller->network_tx->enabled) {
+            *response_length = json_response("404 Not Found", "{\"error\":\"not found\"}\n", response, capacity);
+            return FLEX1500_API_RESPONSE;
+        }
+        flex1500_network_tx_result result = FLEX1500_NETWORK_TX_INVALID;
+        uint64_t lease = 0;
+        if (tx_session_create) {
+            flex1500_network_tx_profile profile;
+            const char *content_type = request_header(request, "Content-Type");
+            if (content_type != NULL &&
+                strncasecmp(content_type, "application/json", 16) == 0 &&
+                parse_tx_profile(request, &profile)) {
+                lease = controller->next_tx_lease++;
+                if (lease == 0) lease = controller->next_tx_lease++;
+                result = flex1500_network_tx_acquire(controller->network_tx,
+                    &profile, lease, controller->request_now_ms);
+            }
+        } else if (request_lease(request, &lease)) {
+            if (tx_keepalive) result = flex1500_network_tx_keepalive(controller->network_tx, lease, controller->request_now_ms);
+            else if (tx_stream) result = flex1500_network_tx_attach_stream(controller->network_tx, lease, controller->request_now_ms);
+            else if (tx_ptt_start) {
+                const flex1500_network_tx_profile *profile =
+                    &controller->network_tx->profile;
+                bool frequency_allowed = radio->frequency_known &&
+                    (profile->source == FLEX1500_NETWORK_TX_IQ
+                        ? flex1500_network_iq_frequency_allowed(
+                              radio->frequency_hz)
+                        : flex1500_physical_mic_frequency_allowed(
+                              radio->frequency_hz,
+                              profile->mode == FLEX1500_NETWORK_TX_USB));
+                result = frequency_allowed
+                    ? flex1500_network_tx_ptt_start(controller->network_tx,
+                          lease, controller->request_now_ms)
+                    : FLEX1500_NETWORK_TX_INVALID;
+            }
+            else if (tx_ptt_stop) result = flex1500_network_tx_ptt_stop(controller->network_tx, lease);
+            else if (tx_release) result = flex1500_network_tx_release(controller->network_tx, lease);
+            else if (tx_audio) {
+                const char *body = strstr(request, "\r\n\r\n");
+                const char *length = request_header(request, "Content-Length");
+                unsigned int bytes = 0;
+                bool audio_profile =
+                    controller->network_tx->profile.source ==
+                        FLEX1500_NETWORK_TX_AUDIO;
+                if (body != NULL && length != NULL &&
+                    sscanf(length, "%u", &bytes) == 1 &&
+                    bytes > 0 && bytes <= 9600 && (bytes % 2) == 0 &&
+                    audio_profile) {
+                    if (!controller->network_tx->stream_connected) {
+                        result = flex1500_network_tx_attach_stream(
+                            controller->network_tx, lease,
+                            controller->request_now_ms);
+                    } else {
+                        result = FLEX1500_NETWORK_TX_OK;
+                    }
+                    if (result == FLEX1500_NETWORK_TX_OK) {
+                        result = flex1500_network_tx_record_data(
+                            controller->network_tx, lease, bytes / 2,
+                            controller->request_now_ms);
+                    }
+                }
+            }
+        }
+        if (result == FLEX1500_NETWORK_TX_OK && tx_stream) return FLEX1500_API_OPEN_TX_STREAM;
+        if (result == FLEX1500_NETWORK_TX_OK && tx_audio) {
+            *response_length = json_response(
+                "200 OK", "{\"accepted\":true}\n", response, capacity);
+            return FLEX1500_API_PUSH_TX_AUDIO;
+        }
+        if (result == FLEX1500_NETWORK_TX_BUSY ||
+            result == FLEX1500_NETWORK_TX_STALE ||
+            result == FLEX1500_NETWORK_TX_NOT_READY) {
+            ++controller->tune_control->diagnostics.rejected_ownership_requests;
+        }
+        char body[256];
+        if (result == FLEX1500_NETWORK_TX_OK && tx_session_create) {
+            snprintf(body, sizeof(body), "{\"lease\":%llu,\"state\":\"reserved\",\"lease_timeout_ms\":%u}\n",
+                     (unsigned long long)lease, FLEX1500_NETWORK_TX_LEASE_MS);
+            *response_length = json_response("201 Created", body, response, capacity);
+        } else if (result == FLEX1500_NETWORK_TX_OK) {
+            snprintf(body, sizeof(body), "{\"state\":\"%s\"}\n",
+                     controller->network_tx->keyed ? "transmitting" : "reserved");
+            *response_length = json_response("200 OK", body, response, capacity);
+        } else {
+            const char *status_line = result == FLEX1500_NETWORK_TX_DISABLED ? "404 Not Found" :
+                result == FLEX1500_NETWORK_TX_BUSY || result == FLEX1500_NETWORK_TX_NOT_READY ? "409 Conflict" :
+                result == FLEX1500_NETWORK_TX_STALE ? "410 Gone" :
+                result == FLEX1500_NETWORK_TX_HARDWARE_ERROR ? "500 Internal Server Error" :
+                result == FLEX1500_NETWORK_TX_INVALID ? "422 Unprocessable Content" : "400 Bad Request";
+            snprintf(body, sizeof(body), "{\"error\":\"tx_%s\"}\n", flex1500_network_tx_result_name(result));
+            *response_length = json_response(status_line, body, response, capacity);
+        }
+        return FLEX1500_API_RESPONSE;
+    }
+
+    if (tx_compressor_path) {
+        if (!tx_compressor_on && !tx_compressor_off) {
+            *response_length = json_response(
+                "400 Bad Request", "{\"error\":\"invalid_tx_compressor\"}\n",
+                response, capacity);
+        } else if (controller->tune_control == NULL ||
+                   controller->tune_control->tx_control == NULL ||
+                   !controller->tune_control->tx_control->enabled) {
+            *response_length = json_response(
+                "404 Not Found", "{\"error\":\"not found\"}\n",
+                response, capacity);
+        } else if (transmitter_active(controller)) {
+            *response_length = json_response(
+                "409 Conflict", "{\"error\":\"transmitter_active\"}\n",
+                response, capacity);
+        } else {
+            controller->tx_compressor_enabled = tx_compressor_on;
+            *response_length = json_response(
+                "200 OK", tx_compressor_on
+                    ? "{\"tx_compressor_enabled\":true}\n"
+                    : "{\"tx_compressor_enabled\":false}\n",
+                response, capacity);
+        }
+        return FLEX1500_API_RESPONSE;
+    }
 
     if (tx_drive_path || tx_mic_gain_path) {
         const bool drive = tx_drive_path;
         uint32_t value = drive ? tx_drive_percent : tx_microphone_gain_db;
         bool parsed = drive ? tx_drive_request : tx_mic_gain_request;
-        uint32_t maximum = drive ? 100 : 70;
-        if (!parsed || (drive && value == 0) || value > maximum) {
+        uint32_t maximum = drive ? FLEX1500_TX_MAX_DRIVE_PERCENT : 70;
+        if (!parsed ||
+            (drive && value < FLEX1500_TX_MIN_DRIVE_PERCENT) ||
+            value > maximum) {
             *response_length = json_response(
                 "400 Bad Request", "{\"error\":\"invalid_tx_setting\"}\n",
                 response, capacity);
@@ -247,6 +483,16 @@ flex1500_api_action flex1500_api_dispatch(
         }
         flex1500_tune_result result = FLEX1500_TUNE_INVALID_LEASE;
         if (tune_start) {
+            if (!radio->frequency_known ||
+                !flex1500_tune_frequency_allowed(radio->frequency_hz)) {
+                ++controller->tune_control->diagnostics
+                      .rejected_ownership_requests;
+                *response_length = json_response(
+                    "422 Unprocessable Content",
+                    "{\"error\":\"tx_frequency_not_allowed\"}\n",
+                    response, capacity);
+                return FLEX1500_API_RESPONSE;
+            }
             uint64_t lease = controller->next_tune_lease++;
             if (lease == 0) lease = controller->next_tune_lease++;
             result = flex1500_tune_control_start(
@@ -286,7 +532,8 @@ flex1500_api_action flex1500_api_dispatch(
         return FLEX1500_API_RESPONSE;
     }
 
-    if ((frequency_request || mode_request) && transmitter_active(controller)) {
+    if ((frequency_request || mode_request || bandwidth_request) &&
+        transmitter_active(controller)) {
         *response_length = json_response(
             "409 Conflict", "{\"error\":\"transmitter_active\"}\n",
             response, capacity);
@@ -377,13 +624,23 @@ flex1500_api_action flex1500_api_dispatch(
     presented_radio.rx_squelch_db = controller->rx_squelch_db;
     if (controller->tune_control != NULL &&
         controller->tune_control->tx_control != NULL) {
-    presented_radio.tx_timeout_seconds =
+        flex1500_tx_control *tx = controller->tune_control->tx_control;
+        presented_radio.tx_timeout_seconds =
             flex1500_tx_control_timeout_seconds(
-                controller->tune_control->tx_control);
+                tx);
+        presented_radio.tx_owner = flex1500_tx_owner_name(tx->owner);
+        presented_radio.tx_state = flex1500_tx_state_name(tx->state);
+    }
+    if (controller->network_tx != NULL) {
+        presented_radio.network_tx_reserved = controller->network_tx->reserved;
+        presented_radio.network_tx_stream_connected =
+            controller->network_tx->stream_connected;
     }
     presented_radio.tx_drive_percent = controller->tx_drive_percent;
     presented_radio.tx_microphone_gain_db =
         controller->tx_microphone_gain_db;
+    presented_radio.tx_compressor_enabled =
+        controller->tx_compressor_enabled;
     if (flex1500_build_status_json(status, status_json, sizeof(status_json)) == 0 ||
         flex1500_build_radio_json(&presented_radio, radio_json,
                                   sizeof(radio_json)) == 0) {

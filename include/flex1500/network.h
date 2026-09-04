@@ -65,7 +65,15 @@ typedef struct flex1500_service_status {
     uint64_t tx_stops;
     uint64_t tx_underruns;
     uint64_t tx_clipped_frames;
+    uint64_t tx_limited_frames;
     uint64_t tx_dropped_microphone_frames;
+    bool tx_audio_meter_valid;
+    float tx_input_peak_dbfs;
+    float tx_input_rms_dbfs;
+    float tx_post_gain_peak_dbfs;
+    float tx_post_gain_rms_dbfs;
+    float tx_output_peak_dbfs;
+    float tx_output_rms_dbfs;
     uint64_t tx_rejected_ownership_requests;
     uint64_t tx_watchdog_stops;
     uint64_t tx_cleanup_failures;
@@ -84,6 +92,11 @@ typedef struct flex1500_radio_info {
     uint32_t tx_timeout_seconds;
     uint32_t tx_drive_percent;
     uint32_t tx_microphone_gain_db;
+    bool tx_compressor_enabled;
+    const char *tx_owner;
+    const char *tx_state;
+    bool network_tx_reserved;
+    bool network_tx_stream_connected;
     bool pa_filter_known;
     uint32_t pa_filter;
     bool rx_tuning_enabled;
@@ -119,7 +132,7 @@ size_t flex1500_build_http_response(const char *request,
                                     const char *radio_json, char *output,
                                     size_t capacity);
 
-/* True only after a complete HTTP header terminator has arrived. */
+/* True after the header and any declared bounded Content-Length body arrive. */
 bool flex1500_http_request_complete(const char *request, size_t length);
 
 /* Parse exactly: PUT /v1/radio/frequency/FREQUENCY_HZ HTTP/... */

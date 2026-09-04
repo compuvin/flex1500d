@@ -3,7 +3,9 @@
 #include "flex1500/network.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 static void store_be16(uint8_t output[2], uint16_t value)
 {
@@ -87,7 +89,15 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         "  \"tx_stops\": %llu,\n"
         "  \"tx_underruns\": %llu,\n"
         "  \"tx_clipped_frames\": %llu,\n"
+        "  \"tx_limited_frames\": %llu,\n"
         "  \"tx_dropped_microphone_frames\": %llu,\n"
+        "  \"tx_audio_meter_valid\": %s,\n"
+        "  \"tx_input_peak_dbfs\": %.1f,\n"
+        "  \"tx_input_rms_dbfs\": %.1f,\n"
+        "  \"tx_post_gain_peak_dbfs\": %.1f,\n"
+        "  \"tx_post_gain_rms_dbfs\": %.1f,\n"
+        "  \"tx_output_peak_dbfs\": %.1f,\n"
+        "  \"tx_output_rms_dbfs\": %.1f,\n"
         "  \"tx_rejected_ownership_requests\": %llu,\n"
         "  \"tx_watchdog_stops\": %llu,\n"
         "  \"tx_cleanup_failures\": %llu\n"
@@ -139,7 +149,12 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         (unsigned long long)status->tx_stops,
         (unsigned long long)status->tx_underruns,
         (unsigned long long)status->tx_clipped_frames,
+        (unsigned long long)status->tx_limited_frames,
         (unsigned long long)status->tx_dropped_microphone_frames,
+        status->tx_audio_meter_valid ? "true" : "false",
+        status->tx_input_peak_dbfs, status->tx_input_rms_dbfs,
+        status->tx_post_gain_peak_dbfs, status->tx_post_gain_rms_dbfs,
+        status->tx_output_peak_dbfs, status->tx_output_rms_dbfs,
         (unsigned long long)status->tx_rejected_ownership_requests,
         (unsigned long long)status->tx_watchdog_stops,
         (unsigned long long)status->tx_cleanup_failures);
@@ -186,6 +201,11 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
         "  \"tx_timeout_seconds\": %u,\n"
         "  \"tx_drive_percent\": %u,\n"
         "  \"tx_microphone_gain_db\": %u,\n"
+        "  \"tx_compressor_enabled\": %s,\n"
+        "  \"tx_owner\": \"%s\",\n"
+        "  \"tx_state\": \"%s\",\n"
+        "  \"network_tx_reserved\": %s,\n"
+        "  \"network_tx_stream_connected\": %s,\n"
         "  \"pa_filter\": %s,\n"
         "  \"rx_tuning_enabled\": %s,\n"
         "  \"frequency_hz\": %s,\n"
@@ -209,6 +229,11 @@ size_t flex1500_build_radio_json(const flex1500_radio_info *radio,
         radio->tx_timeout_seconds,
         radio->tx_drive_percent,
         radio->tx_microphone_gain_db,
+        radio->tx_compressor_enabled ? "true" : "false",
+        radio->tx_owner != NULL ? radio->tx_owner : "none",
+        radio->tx_state != NULL ? radio->tx_state : "rx",
+        radio->network_tx_reserved ? "true" : "false",
+        radio->network_tx_stream_connected ? "true" : "false",
         pa_filter,
         radio->rx_tuning_enabled ? "true" : "false", frequency, filter, gain,
         radio->rx_mode != NULL ? radio->rx_mode : "am",
@@ -295,10 +320,33 @@ bool flex1500_http_request_complete(const char *request, size_t length)
 {
     if (request == NULL) return false;
     for (size_t index = 0; index + 1 < length; ++index) {
-        if (request[index] == '\n' && request[index + 1] == '\n') return true;
+        size_t header_length = 0;
+        if (request[index] == '\n' && request[index + 1] == '\n') {
+            header_length = index + 2;
+        }
         if (index + 3 < length && request[index] == '\r' &&
             request[index + 1] == '\n' && request[index + 2] == '\r' &&
-            request[index + 3] == '\n') return true;
+            request[index + 3] == '\n') header_length = index + 4;
+        if (header_length == 0) continue;
+        const char *field = request;
+        while ((size_t)(field - request) < header_length) {
+            const char *next = strstr(field, "\r\n");
+            if (next == NULL || (size_t)(next - request) >= header_length) {
+                field = NULL;
+                break;
+            }
+            if (strncasecmp(field, "Content-Length:", 15) == 0) break;
+            field = next + 2;
+        }
+        if (field == NULL || (size_t)(field - request) >= header_length) {
+            return true;
+        }
+        field += strlen("Content-Length:");
+        while (*field == ' ') ++field;
+        char *end = NULL;
+        unsigned long body_length = strtoul(field, &end, 10);
+        if (end == field || body_length > 65536) return true;
+        return length >= header_length + body_length;
     }
     return false;
 }

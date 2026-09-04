@@ -204,10 +204,17 @@ int main(void)
     CHECK(!flex1500_physical_mic_frequency_allowed(10000000, true));
     CHECK(!flex1500_physical_mic_frequency_allowed(10125000, true));
     CHECK(!flex1500_physical_mic_frequency_allowed(27000000, true));
+    CHECK(flex1500_tune_frequency_allowed(28475000));
+    CHECK(flex1500_tune_frequency_allowed(5357000));
+    CHECK(!flex1500_tune_frequency_allowed(10000000));
+    CHECK(!flex1500_tune_frequency_allowed(30475000));
     CHECK(flex1500_physical_mic_frequency_allowed(5357000, true));
     CHECK(!flex1500_physical_mic_frequency_allowed(5357000, false));
     CHECK(flex1500_physical_mic_frequency_allowed(5330500, true));
     CHECK(!flex1500_physical_mic_frequency_allowed(5330501, true));
+    CHECK(flex1500_network_iq_frequency_allowed(28475000));
+    CHECK(!flex1500_network_iq_frequency_allowed(28000000));
+    CHECK(!flex1500_network_iq_frequency_allowed(5357000));
 
     CHECK(flex1500_usb_tune_frequency_to_tuning_word(
         28475000, 600, &tuning_word));

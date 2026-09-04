@@ -236,6 +236,14 @@ unchanged pending objective level or ALC instrumentation. LSB orientation is
 covered by deterministic offline spectral tests but still needs a separate
 live dummy-load test.
 
+The shared TX-audio stage now records input, post-gain, and final-output peak
+and RMS levels and publishes them in dBFS through `/v1/status`. Its final
+complex-magnitude limiter caps I/Q at the selected drive magnitude and records
+every limited frame; integer clipping remains separately counted. An optional
+3:1 speech compressor above -12 dBFS is disabled by default and configurable
+only while unkeyed. These host-side facilities require a later live level test
+and do not substitute for radio ALC, power, or spectral measurements.
+
 ## Safe implementation order
 
 - [x] Capture physical mic PTT press/release under Linux without transmitting;

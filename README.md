@@ -60,10 +60,23 @@ application, select the FLEX-1500 through a compatibility adapter, and use the
 radio without that application needing to understand the FLEX-1500's USB
 protocol.
 
+## Stretch goals
+
+These ideas would make fuller use of the FLEX-1500 hardware, but they are not
+requirements for the daemon's initial release or normal network-SDR use:
+
+- [ ] Send host-demodulated receive audio back through USB endpoint `0x01` so
+  the radio's physical front-panel headphone jack can be used while the daemon
+  is running.
+- [ ] Physically validate the front-panel CW key jack's decoded dot and dash
+  events, then document straight-key and paddle behavior.
+- [ ] Add an optional CW keyer and sidetone path, with reviewed timing,
+  transmitter ownership, carrier generation, and safe-unkey behavior.
+
 ## Important safety boundary
 
-The basic `--initialize-radio` daemon mode and the SoapySDR adapter remain
-receive-only:
+The basic `--initialize-radio` daemon mode and the current SoapySDR adapter
+remain receive-only:
 
 - no PTT or MOX route;
 - no general TX sample-stream endpoint;
@@ -71,13 +84,16 @@ receive-only:
 - `GET /v1/radio` normally reports `transmit_enabled: false`; and
 - representative TX/PTT requests are tested to return 404.
 
-The sole exception is the validated, capture-matched 5 W Tune carrier. It is
-enabled only by the `--initialize-radio-and-enable-transmit` live mode
-and is available over the same LAN API. It uses an exclusive lease, a
-15-second renewal watchdog, a 60-second hard limit, and fail-safe unkey/RX-
-restore cleanup. The interlock and lease are safety mechanisms, not security
-credentials. Use a suitable matched antenna system or 50-ohm dummy load and
-follow normal RF exposure and station-control practices.
+Transmit operations are exposed only by the distinct
+`--initialize-radio-and-enable-transmit` live mode. The validated fixed Tune
+carrier and physical microphone path share an exclusive owner with the new
+HTTP PCM-audio and complex-I/Q TX sessions. Network TX adds prebuffer, lease,
+sample-data, maximum-key, disconnect, and cleanup watchdogs. HTTP PCM audio and
+raw I/Q have completed bounded live dummy-load tests; individual modes, bands,
+and applications still require the validation tracked in the engineering
+checklist. The interlocks and leases are safety
+mechanisms, not security credentials. Use a suitable matched antenna system or
+50-ohm dummy load and follow normal RF exposure and station-control practices.
 
 The standard build includes standalone transmit-research executables for
 protocol documentation and reproducibility. They are never called by the
@@ -88,7 +104,10 @@ dummy load, an independently reviewed fixed test plan, and explicit
 authorization. A dummy load alone does not make an unreviewed test safe.
 
 See [hardware safety](docs/HARDWARE_SAFETY.md) and
-[transmit-research safety](docs/TRANSMIT_RESEARCH_SAFETY.md).
+[transmit-research safety](docs/TRANSMIT_RESEARCH_SAFETY.md). Before enabling
+daemon transmit, read the consolidated
+[transmit operator guide](docs/TX_OPERATOR_GUIDE.md), including its emergency
+unkey procedure.
 The remaining engineering work for general transmit is tracked separately in
 [the transmit enablement checklist](docs/TRANSMIT_ENABLEMENT_CHECKLIST.md); it
 does not modify the project goals above.
@@ -104,7 +123,9 @@ does not modify the project goals above.
 - Versioned binary `F15I` IQ framing
 - Detailed USB, sample, ring-buffer, network, and tuning counters
 - Offline IQ inspection, framing, AM/FM/USB/LSB demodulation, and WAV output
-- Opt-in browser RX page with AM, FM, USB, LSB, and CW audio
+- Opt-in browser operator page with AM, FM, USB, LSB, and CW receive audio;
+  transmit-enabled mode adds Tune, TX settings, and local-computer microphone
+  controls
 - Receive-only SoapySDR adapter for established SDR applications
 - Guarded hardware probes that remain offline unless given an exact execution
   argument
@@ -116,6 +137,8 @@ does not modify the project goals above.
   transport encryption; it must not be exposed to an untrusted network.
 - Only one IQ stream client is supported at a time.
 - The browser page is a development harness, not the long-term user interface.
+  Computer-microphone TX requires a secure browser context, so plain HTTP works
+  on `localhost` but not normally from another LAN computer.
 - Receiver filter bandwidth, RF/preamp gain, audio gain, and squelch are
   adjustable through the API and test page; hardware bandwidth and additional
   DSP refinement remain future work.
@@ -124,7 +147,9 @@ does not modify the project goals above.
   no Hamlib or other adapter yet.
 - There is no installer, systemd unit, or background-service configuration;
   the daemon currently runs in the foreground.
-- Transmit is unsupported and intentionally disabled in the daemon/API.
+- Transmit remains experimental and is unavailable in normal receive-only
+  daemon modes. The explicitly transmit-enabled mode supports the paths and
+  limitations listed in the [transmit operator guide](docs/TX_OPERATOR_GUIDE.md).
 
 ## Requirements
 
@@ -150,7 +175,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The clean default configuration currently runs 44 offline tests. Building and
+The clean default configuration currently runs 46 offline tests. Building and
 testing does not enumerate, open, initialize, tune, or otherwise access the
 radio.
 
@@ -281,6 +306,11 @@ The current API is HTTP version 1 on TCP port 15000:
 | `PUT /v1/radio/tune/keepalive/LEASE` | Renew the active Tune lease |
 | `PUT /v1/radio/tune/stop/LEASE` | Stop Tune and restore receive operation |
 | `PUT /v1/radio/tx-timeout/SECONDS` | Configure the shared 30–1800 second TX timer |
+| `PUT /v1/radio/tx-compressor/on|off` | Enable or disable shared TX speech compression while unkeyed |
+| `POST /v1/tx/sessions` | Reserve general network TX with an explicit audio or I/Q profile |
+| `CONNECT /v1/tx/stream` | Open the leased raw PCM16 or complex-IQ sample tunnel |
+| `PUT /v1/tx/ptt/start|stop` | Key or unkey the leased, prebuffered network TX session |
+| `DELETE /v1/tx/sessions/current` | Unkey and release the network TX lease |
 | `GET /test` | Opt-in development page when explicitly enabled |
 
 Frequency control is available only with the exact tuning-enabled daemon
@@ -325,10 +355,11 @@ continuous USB/LSB modulation are now connected to the reviewed ownership and
 cleanup path. Repeated USB voice tests into a dummy load validated natural
 audio, adequate subjective level, reliable PTT, unkey, and RX restoration;
 calibrated modulation/ALC measurement and live LSB validation remain open.
-Physical PTT is rejected unless TX mode is enabled, startup/recovery has
+Physical and HTTP PTT are rejected unless TX mode is enabled, startup/recovery has
 established an unkeyed prepared state, the frequency is known and permitted by
-the daemon's band policy, and the mode is USB or LSB. Arbitrary transmit I/Q,
-HTTP PTT, and SoapySDR transmit remain unavailable.
+the daemon's band policy, and the selected profile is valid. HTTP TX accepts
+USB/LSB PCM audio or guarded raw complex I/Q. SoapySDR transmit remains
+unavailable until the adapter is connected to this API.
 
 Transmit mode and all standalone TX probes are experimental, intended for
 testing, and used entirely at the operator's own risk. The operator is

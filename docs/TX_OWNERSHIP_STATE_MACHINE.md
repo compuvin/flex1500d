@@ -8,8 +8,8 @@ not a README project goal and does not by itself enable physical microphone TX.
 
 ## Owners and local priority
 
-The defined owners are fixed Tune, physical microphone PTT, future general HTTP
-TX, and future SoapySDR TX. A physical PTT press is itself an ownership request;
+The defined owners are fixed Tune, physical microphone PTT, and general network
+TX used by direct HTTP and SoapySDR clients. A physical PTT press is itself an ownership request;
 the operator does not need a separate lease because KB1JDX established the
 operating assumption that the person holding the microphone is also controlling
 the radio's current frequency and mode.
@@ -27,9 +27,44 @@ such as active Tune. Receive/IQ delivery may pause while the hardware is keyed
 and resume after unkey, but the network session should remain established where
 the client protocol permits it.
 
-While keyed, unsafe frequency, mode, drive, and filter changes are rejected or
-staged according to the eventual command policy; they do not cause the client
-to be disconnected.
+While keyed, frequency, mode, drive, microphone-gain, compressor, timeout, and
+filter-bandwidth changes are rejected; they do not cause the client to be
+disconnected. No change is implicitly staged. The controlling client must
+unkey, apply the new setting, and then key again. Receive squelch is host-only
+and may still change because it cannot alter radio hardware or transmitted
+samples.
+
+## Controlling-client contract
+
+There is exactly one transmitter owner, even when several clients remain
+connected for receive or radio control. Ownership is scoped to a particular TX
+operation and is represented as follows:
+
+- Physical microphone PTT owns TX from its accepted press edge through its
+  release edge. It has no network lease and does not disconnect or revoke the
+  API or Soapy session used by the microphone holder to configure the radio.
+- Tune uses its existing opaque lease and keepalive watchdog. Lease expiry,
+  explicit stop, client abandonment, maximum-key timeout, shutdown, or USB
+  failure invokes the same unkey cleanup.
+- HTTP voice/data TX acquires an opaque, unpredictable ownership
+  token before keying. Every keepalive, audio submission, stop, and release
+  request must present that token. Because HTTP requests are not necessarily a
+  persistent connection, loss is defined by a short, non-disableable lease
+  timeout rather than by one TCP socket closing.
+- SoapySDR TX uses an HTTP raw-I/Q lease bound to one activated TX stream instance.
+  Deactivating or closing that stream, destroying the device, losing its
+  transport connection, or exceeding a bounded stream-data timeout must unkey
+  and release ownership.
+
+An HTTP token or Soapy stream belonging to a non-owner is rejected and cannot
+stop, renew, or feed another owner's transmission. Failed acquisition does not
+disturb the current owner. Ownership tokens are safety correlation values, not
+authentication credentials or security boundaries.
+
+Physical PTT retains the local-priority rule above. It may preempt an active
+network or Tune owner only by completing that owner's unkey and cleanup first.
+Network owners never preempt physical PTT; they receive a busy response until
+the microphone is released and cleanup completes.
 
 ## States and interlocks
 
@@ -46,6 +81,32 @@ ownership. Every owner is subject to a non-disableable maximum-key duration:
 API only while unkeyed. The setting survives automatic USB recovery.
 Shutdown invokes the active owner's stop callback. Competing non-physical
 owners are rejected rather than allowed to overlap.
+
+Every owner passes the same explicit interlocks before `preparing` can begin:
+
+- the daemon was started with `--initialize-radio-and-enable-transmit`;
+- initialization or USB recovery has positively established RX/unkeyed state
+  and completed TX preparation;
+- the radio has a known, permitted transmit frequency and a matching PA filter;
+- the requested modulation mode and audio/IQ source are implemented and valid;
+- drive and all source-specific level settings are within enforced limits;
+- the controller is neither recovering nor faulted; and
+- no other owner holds TX, except for the reviewed physical-PTT preemption
+  sequence.
+
+Failure of any interlock rejects the request without keying. A failure after
+preparation begins invokes the complete unkey/RX-restoration cleanup and enters
+`faulted` if cleanup cannot be confirmed. Recovery must construct a fresh,
+unowned controller; a pre-disconnect lease or stream can never resume TX
+automatically. Physical PTT is re-armed only after recovery again establishes
+the safe prepared state.
+
+The maximum-key timer starts when the controller accepts the owner and is not
+extended by audio traffic, HTTP keepalives, or Soapy writes. Its expiry always
+attempts unkey and releases ownership. Shorter per-owner liveness watchdogs
+(Tune lease, future HTTP lease, and future Soapy stream-data timeout) may stop
+TX earlier. Process signals and normal daemon shutdown use the identical owner
+stop path before TX preparation is disabled.
 
 ## Offline evidence
 

@@ -190,8 +190,17 @@ Tune carrier have been demonstrated successfully. The basic and RX-tuning
 daemon modes remain receive-only. The distinct transmit-enabled mode prepares
 the TX amplifier path, tracks the PA filter after a frequency becomes known,
 exposes the fixed Tune carrier, and connects physical microphone PTT to live
-USB/LSB modulation through the shared TX controller. Arbitrary network TX
-samples, HTTP PTT, and SoapySDR TX remain unavailable.
+USB/LSB modulation through the shared TX controller. Leased HTTP TX sessions
+now accept USB/LSB PCM or guarded complex I/Q through that same controller;
+USB PCM and raw-I/Q paths have bounded live dummy-load validation. The
+SoapySDR adapter now maps its optional TX channel into the leased raw-I/Q API;
+that adapter path has exhaustive mock-daemon coverage but still requires a
+separately approved live interoperability test.
+
+All endpoint-`0x04` commands and endpoint-`0x01` TX stream start, service, and
+stop operations cross the mockable interface described in
+[USB I/O mocking](USB_IO_MOCKING.md). The production implementation delegates
+to libusb; offline tests can inject deterministic failures without a radio.
 
 The guarded TX probes remain research/validation tools and are included in the
 standard build. `FLEX1500_BUILD_TX_RESEARCH=OFF` omits those standalone

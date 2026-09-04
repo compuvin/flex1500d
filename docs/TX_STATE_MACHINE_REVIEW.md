@@ -8,8 +8,9 @@ the transmitter. It does not authorize or perform a radio write.
 
 ## Reviewed behavior
 
-- One shared controller owns Tune, physical microphone, future HTTP TX, or
-  future SoapySDR TX; two owners cannot be keyed simultaneously.
+- One shared controller owns Tune, physical microphone, HTTP TX, or SoapySDR
+  TX; two owners cannot be keyed simultaneously. Soapy uses the HTTP raw-I/Q
+  lease rather than introducing another daemon-side owner category.
 - Physical PTT is armed only after startup or USB recovery has explicitly
   established unkeyed RX state and completed TX preparation. This permits the
   first real press because endpoint `0x83` does not report an initial release.
@@ -61,13 +62,15 @@ acts only on microphone PTT edges, arms only after successful startup/recovery
 cleanup and TX preparation, and snapshots frequency, USB/LSB mode, drive, and
 microphone gain before the first TX command. Frequency, mode, drive, and
 microphone-gain API changes are rejected while keyed. SoapySDR may remain
-connected to a TX-enabled daemon as its RX/control client, but continues to
-expose zero TX channels and cannot key the transmitter.
+connected as an RX/control client; its TX channel is advertised only by a
+TX-enabled daemon and uses the same leased raw-I/Q owner as the HTTP API.
 
 Physical microphone key-down is rejected before ownership is requested if the
 frequency is unknown, the mode is not USB/LSB, or the frequency is outside the
 configured amateur voice-allocation policy. TX-disabled mode never calls the
-physical PTT controller.
+physical PTT controller. The Soapy adapter exposes a TX channel only when the
+daemon reports TX enabled; activation, prebuffered keying, continuous samples,
+deactivation, and destruction are covered by its mock-daemon lifecycle test.
 
 ## Remaining validation blockers
 

@@ -9,7 +9,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
 option(FLEX1500_BUILD_SOAPYSDR
-    "Build the receive-only SoapySDR adapter"
+    "Build the SoapySDR RX/TX adapter"
     ON
 )
 if(FLEX1500_BUILD_SOAPYSDR)
@@ -63,6 +63,7 @@ target_link_libraries(flex1500_tx_dsp PUBLIC m)
 target_compile_options(flex1500_tx_dsp PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(flex1500_tune_control STATIC
+    src/network_tx.c
     src/tune_control.c
     src/tx_control.c
 )
@@ -79,6 +80,7 @@ target_compile_options(flex1500_protocol PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(flex1500_usb_rx STATIC
     src/usb_rx.c
+    src/usb_io.c
     src/tx_lifecycle.c
 )
 target_include_directories(flex1500_usb_rx PUBLIC include)
@@ -348,6 +350,10 @@ if(BUILD_TESTING)
     target_link_libraries(tx-control-test PRIVATE flex1500_tune_control)
     target_compile_options(tx-control-test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME tx-control COMMAND tx-control-test)
+    add_executable(network-tx-test tests/network_tx_test.c)
+    target_link_libraries(network-tx-test PRIVATE flex1500_tune_control)
+    target_compile_options(network-tx-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME network-tx COMMAND network-tx-test)
     add_test(NAME mic-iq-offline-requires-explicit-drive
         COMMAND flex1500-mic-iq-offline input.pcm output.iq16le usb)
     set_tests_properties(mic-iq-offline-requires-explicit-drive PROPERTIES
@@ -378,6 +384,17 @@ if(BUILD_TESTING)
         -Wall -Wextra -Wpedantic
     )
     add_test(NAME tx-lifecycle-offline COMMAND tx-lifecycle-test)
+    add_executable(usb-io-test tests/usb_io_test.c)
+    target_link_libraries(usb-io-test PRIVATE flex1500_usb_rx)
+    target_compile_options(usb-io-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME usb-io-offline COMMAND usb-io-test)
+    add_executable(tx-failure-injection-test
+        tests/tx_failure_injection_test.c)
+    target_link_libraries(tx-failure-injection-test PRIVATE flex1500_usb_rx)
+    target_compile_options(tx-failure-injection-test PRIVATE
+        -Wall -Wextra -Wpedantic)
+    add_test(NAME tx-failure-injection-offline
+        COMMAND tx-failure-injection-test)
 
     add_executable(network-protocol-test tests/network_protocol_test.c)
     target_link_libraries(network-protocol-test PRIVATE flex1500_protocol)

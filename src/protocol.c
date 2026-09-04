@@ -284,6 +284,28 @@ bool flex1500_physical_mic_frequency_allowed(
     return false;
 }
 
+bool flex1500_tune_frequency_allowed(uint32_t frequency_hz)
+{
+    /* Tune is a zero-width carrier, but it must still remain in an allowed
+       amateur allocation. USB=true also includes the permitted 60 m cases. */
+    return flex1500_physical_mic_frequency_allowed(frequency_hz, true);
+}
+
+bool flex1500_network_iq_frequency_allowed(uint32_t frequency_hz)
+{
+    static const struct { uint32_t low, high; } allocations[] = {
+        {1800000, 2000000}, {3500000, 4000000}, {7000000, 7300000},
+        {14000000, 14350000}, {18068000, 18168000},
+        {21000000, 21450000}, {24890000, 24990000},
+        {28000000, 29700000}, {50000000, 54000000},
+    };
+    for (size_t i = 0; i < sizeof(allocations) / sizeof(allocations[0]); ++i) {
+        if (frequency_hz >= allocations[i].low + 24000 &&
+            frequency_hz <= allocations[i].high - 24000) return true;
+    }
+    return false;
+}
+
 bool flex1500_usb_tune_frequency_to_tuning_word(uint32_t carrier_hz,
                                                 uint32_t tone_hz,
                                                 uint32_t *tuning_word)

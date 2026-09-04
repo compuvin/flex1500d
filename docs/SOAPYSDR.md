@@ -1,4 +1,4 @@
-# Receive-only SoapySDR adapter
+# SoapySDR adapter
 
 The `flex1500Support` module presents the receive side of a running
 `flex1500d` daemon as a SoapySDR device. It is an API client: it does not link
@@ -12,7 +12,7 @@ FLEX-1500 -> flex1500d -> HTTP/F15I API -> flex1500Support -> SDR application
 ## Current contract
 
 - driver name: `flex1500`
-- one RX channel and zero TX channels
+- one RX channel, plus one TX channel when the daemon is transmit-enabled
 - fixed 48,000 complex samples per second
 - native `CF32` samples, with `CS16` also available
 - center frequency from 100 kHz through 54 MHz
@@ -27,7 +27,10 @@ SoapySDRUtil --find="driver=flex1500,host=radio-pc.local,port=15000"
 ```
 
 API version 1 is unauthenticated and unencrypted. Limit port 15000 to trusted
-LAN hosts with a firewall; do not expose it directly to the internet.
+LAN hosts with a firewall; do not expose it directly to the internet. SoapySDR
+does not define authentication for this daemon protocol, but a future version
+of this module can supply API credentials on the application's behalf; see
+[API and SoapySDR authentication notes](API_AUTHENTICATION_DESIGN.md).
 
 The FLEX-1500/native `F15I` stream uses the orientation expected by the
 project's browser and offline DSP. The adapter negates Q at the SoapySDR
@@ -35,13 +38,24 @@ boundary so positive/negative frequencies follow SoapySDR application
 conventions; without that conversion, USB and LSB appear reversed. The native
 API bytes are intentionally unchanged.
 
-The adapter can attach to either RX-only or explicitly TX-enabled daemon mode,
-allowing the physical microphone operator to keep using a Soapy client for RX
-frequency and mode control. The adapter itself remains strictly RX-only: it
-reports zero TX channels and exposes no TX stream, PTT, MOX, or other transmit
-control. SoapySDR supports transmit in its general API, but this module will not
-advertise it unless a future, separately reviewed daemon TX API is deliberately
-implemented.
+The adapter can attach to either RX-only or explicitly TX-enabled daemon mode.
+It reports zero TX channels against an RX-only daemon. Against a TX-enabled
+daemon it reports one `CF32`/`CS16`, 48 ksample/s TX channel and maps it to the
+daemon's leased raw-I/Q API. Stream activation reserves the shared HTTP owner
+and connects its sample tunnel. After the required 24,000-frame prebuffer,
+continuous writes key the transmitter. Deactivation or destruction stops PTT,
+releases the lease, and closes the stream. Periodic writes renew the lease;
+stalled or disconnected clients remain subject to the daemon's data watchdog,
+maximum-key timer, guaranteed-unkey cleanup, drive limiter, and ownership
+rules.
+
+Soapy I/Q is conjugated at the adapter boundary, matching the receive-side
+orientation correction. TX drive is exposed through Soapy's TX gain control as
+an integer percentage from 1 through 100. Raw-I/Q center frequencies are
+advertised only where the complete plus/minus 24 kHz span fits within a
+configured amateur allocation; the daemon independently rechecks that rule at
+PTT start. Soapy timed bursts and `END_BURST` flags are not yet supported;
+applications must use continuous streaming and explicitly deactivate TX.
 
 ## Build
 
@@ -70,8 +84,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 The adapter test starts a loopback mock daemon and supplies synthetic `F15I`
-samples. It checks discovery, the receive-only channel count, sample rate,
-frequency tuning, stream activation, and decoded samples without USB access.
+samples. It checks discovery, RX and conditional TX channel counts, frequency,
+gain, stream activation, decoded RX samples, leased TX lifecycle, I/Q
+orientation, PTT stop, and session release without USB access.
 
 ## Development-tree testing
 
@@ -124,3 +139,32 @@ After installing the module with `cmake --install`, KB1JDX also successfully
 discovered and used the FLEX-1500 from SDR Oxide. This is the first validation
 with an established SoapySDR-compatible application. Broader application
 compatibility and behavior over longer sessions remain future work.
+
+## First live TX validation
+
+Date: 2026-09-03
+
+KB1JDX tested the SoapySDR TX channel repeatedly with SDR Oxide at 28.475 MHz
+into a suitable dummy load. SDR Oxide supplied continuous raw I/Q through the
+leased network TX path. The radio transmitted application audio, then unkeyed
+and released the session cleanly on every observed test. Daemon logs showed
+successful session acquisition, stream connection, PTT start, PTT stop, and
+session release without an abandoned owner.
+
+TX begins only after the daemon has received its required 24,000-frame
+prebuffer. During this validation the adapter's initial PTT attempts returned
+transient `409 Conflict` responses until the daemon had accounted for enough
+samples; a later retry then keyed successfully. This produces a noticeable but
+safe startup delay and remains an interoperability/latency improvement area.
+
+SDR Oxide's Tune button does not call the FLEX-1500 daemon's dedicated
+capture-matched 5 W Tune API. It opens an ordinary SoapySDR raw-I/Q TX stream.
+In the observed test the radio keyed but the wattmeter showed no RF output,
+consistent with the application supplying zero-magnitude or otherwise
+carrier-free I/Q. The adapter must not reinterpret zero I/Q as a Tune request,
+because zero samples are valid raw-stream data. Operators who need the
+validated 5 W carrier should use the daemon's browser or HTTP Tune control.
+
+This validates the adapter-to-daemon Soapy TX lifecycle with SDR Oxide. It does
+not yet establish compatibility with other SoapySDR transmit applications,
+timed bursts, or `END_BURST` operation.

@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <algorithm>
+#include <sstream>
 #include <vector>
 
 namespace {
@@ -33,6 +34,22 @@ constexpr double MIN_FREQUENCY = 100000.0;
 constexpr double MAX_FREQUENCY = 54000000.0;
 constexpr std::size_t FRAME_HEADER_SIZE = 20;
 constexpr std::size_t STREAM_MTU = 1024;
+
+const SoapySDR::RangeList TX_FREQUENCY_RANGES = {
+    {1824000.0, 1976000.0}, {3524000.0, 3976000.0},
+    {7024000.0, 7276000.0}, {14024000.0, 14326000.0},
+    {18092000.0, 18144000.0}, {21024000.0, 21426000.0},
+    {24914000.0, 24966000.0}, {28024000.0, 29676000.0},
+    {50024000.0, 53976000.0},
+};
+
+bool txFrequencyAllowed(double frequency)
+{
+    return std::any_of(TX_FREQUENCY_RANGES.begin(), TX_FREQUENCY_RANGES.end(),
+        [frequency](const SoapySDR::Range &range) {
+            return frequency >= range.minimum() && frequency <= range.maximum();
+        });
+}
 
 class Socket {
 public:
@@ -146,11 +163,19 @@ std::string receiveUntil(int fd, const std::string &delimiter,
 
 HttpResponse request(const std::string &host, uint16_t port,
                      const std::string &method, const std::string &path,
-                     bool keepSocket = false)
+                     bool keepSocket = false,
+                     const std::string &requestBody = {},
+                     const std::vector<std::string> &headers = {})
 {
     Socket socket = connectTcp(host, port);
-    sendAll(socket.get(), method + " " + path + " HTTP/1.1\r\nHost: " + host +
-                              "\r\nConnection: close\r\n\r\n");
+    std::string wire = method + " " + path + " HTTP/1.1\r\nHost: " + host +
+        "\r\nConnection: " + (keepSocket ? "keep-alive" : "close") + "\r\n";
+    for (const auto &header : headers) wire += header + "\r\n";
+    if (!requestBody.empty())
+        wire += "Content-Length: " + std::to_string(requestBody.size()) +
+                "\r\n";
+    wire += "\r\n" + requestBody;
+    sendAll(socket.get(), wire);
     std::string received = receiveUntil(socket.get(), "\r\n\r\n", 16384);
     const std::size_t split = received.find("\r\n\r\n");
     std::string header = received.substr(0, split + 4);
@@ -232,6 +257,19 @@ struct RxStream {
     bool haveSequence = false;
 };
 
+struct TxStream {
+    explicit TxStream(std::string requestedFormat)
+        : format(std::move(requestedFormat)) {}
+
+    std::string format;
+    Socket socket;
+    uint64_t lease = 0;
+    std::size_t submittedFrames = 0;
+    bool active = false;
+    bool keyed = false;
+    std::chrono::steady_clock::time_point lastKeepalive{};
+};
+
 class Flex1500Device final : public SoapySDR::Device {
 public:
     explicit Flex1500Device(const SoapySDR::Kwargs &args)
@@ -246,68 +284,92 @@ public:
         tuningEnabled_ = jsonBool(radio.body, "rx_tuning_enabled", false);
         frequency_ = jsonNumber(radio.body, "frequency_hz", 0.0);
         gain_ = jsonNumber(radio.body, "rx_gain_db", 20.0);
+        txDrive_ = jsonNumber(radio.body, "tx_drive_percent", 100.0);
         bandwidth_ = jsonNumber(radio.body, "rx_bandwidth_hz", 6000.0);
         squelch_ = jsonNumber(radio.body, "rx_squelch_db", -120.0);
     }
-    ~Flex1500Device() override { delete stream_; }
+    ~Flex1500Device() override
+    {
+        if (txStream_ != nullptr) stopTx(*txStream_);
+        delete rxStream_;
+        delete txStream_;
+    }
 
     std::string getDriverKey() const override { return "flex1500"; }
     std::string getHardwareKey() const override { return "FLEX-1500 via flex1500d"; }
     SoapySDR::Kwargs getHardwareInfo() const override
     {
         return {{"daemon", host_ + ":" + std::to_string(port_)},
-                {"receive_only", "true"},
+                {"receive_only", daemonTransmitEnabled_ ? "false" : "true"},
                 {"daemon_transmit_enabled",
                  daemonTransmitEnabled_ ? "true" : "false"},
                 {"transport", "flex1500d API v1"}};
     }
     size_t getNumChannels(int direction) const override
     {
-        return direction == SOAPY_SDR_RX ? 1 : 0;
+        return direction == SOAPY_SDR_RX ||
+            (direction == SOAPY_SDR_TX && daemonTransmitEnabled_) ? 1 : 0;
     }
     bool getFullDuplex(int, size_t) const override { return false; }
     std::vector<std::string> getStreamFormats(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         return {SOAPY_SDR_CF32, SOAPY_SDR_CS16};
     }
     std::string getNativeStreamFormat(int direction, size_t channel,
                                       double &fullScale) const override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         fullScale = 32768.0;
-        return SOAPY_SDR_CF32;
+        return direction == SOAPY_SDR_RX ? SOAPY_SDR_CF32 : SOAPY_SDR_CS16;
     }
     SoapySDR::Stream *setupStream(int direction, const std::string &format,
                                   const std::vector<size_t> &channels,
                                   const SoapySDR::Kwargs &) override
     {
-        if (direction != SOAPY_SDR_RX ||
-            (!channels.empty() && (channels.size() != 1 || channels[0] != 0)))
-            throw std::runtime_error("flex1500: only RX channel 0 is supported");
+        checkChannel(direction, 0);
+        if (!channels.empty() && (channels.size() != 1 || channels[0] != 0))
+            throw std::runtime_error("flex1500: only channel 0 is supported");
         if (format != SOAPY_SDR_CF32 && format != SOAPY_SDR_CS16)
             throw std::runtime_error("flex1500: stream format must be CF32 or CS16");
-        if (stream_ != nullptr)
-            throw std::runtime_error("flex1500: only one RX stream is supported");
-        stream_ = new RxStream{format};
-        return reinterpret_cast<SoapySDR::Stream *>(stream_);
+        if (direction == SOAPY_SDR_RX) {
+            if (rxStream_ != nullptr)
+                throw std::runtime_error("flex1500: only one RX stream is supported");
+            rxStream_ = new RxStream{format};
+            return reinterpret_cast<SoapySDR::Stream *>(rxStream_);
+        }
+        if (txStream_ != nullptr)
+            throw std::runtime_error("flex1500: only one TX stream is supported");
+        txStream_ = new TxStream{format};
+        return reinterpret_cast<SoapySDR::Stream *>(txStream_);
     }
     void closeStream(SoapySDR::Stream *handle) override
     {
-        RxStream *stream = checked(handle);
-        delete stream;
-        stream_ = nullptr;
+        if (handle == reinterpret_cast<SoapySDR::Stream *>(rxStream_)) {
+            delete rxStream_;
+            rxStream_ = nullptr;
+            return;
+        }
+        if (handle == reinterpret_cast<SoapySDR::Stream *>(txStream_)) {
+            stopTx(*txStream_);
+            delete txStream_;
+            txStream_ = nullptr;
+            return;
+        }
+        throw std::runtime_error("flex1500: invalid stream handle");
     }
     size_t getStreamMTU(SoapySDR::Stream *handle) const override
     {
-        checked(handle);
+        checkedDirection(handle);
         return STREAM_MTU;
     }
     int activateStream(SoapySDR::Stream *handle, int flags, long long,
                        size_t numElems) override
     {
-        RxStream *stream = checked(handle);
         if (flags != 0 || numElems != 0) return SOAPY_SDR_NOT_SUPPORTED;
+        if (handle == reinterpret_cast<SoapySDR::Stream *>(txStream_))
+            return activateTx(*txStream_);
+        RxStream *stream = checkedRx(handle);
         HttpResponse response = request(host_, port_, "GET", "/v1/stream/iq", true);
         if (response.status != 200) return SOAPY_SDR_STREAM_ERROR;
         stream->socket = std::move(response.socket);
@@ -320,8 +382,12 @@ public:
     }
     int deactivateStream(SoapySDR::Stream *handle, int flags, long long) override
     {
-        RxStream *stream = checked(handle);
         if (flags != 0) return SOAPY_SDR_NOT_SUPPORTED;
+        if (handle == reinterpret_cast<SoapySDR::Stream *>(txStream_)) {
+            stopTx(*txStream_);
+            return 0;
+        }
+        RxStream *stream = checkedRx(handle);
         stream->socket.close();
         stream->active = false;
         return 0;
@@ -330,7 +396,7 @@ public:
                    size_t numElems, int &flags, long long &timeNs,
                    long timeoutUs) override
     {
-        RxStream *stream = checked(handle);
+        RxStream *stream = checkedRx(handle);
         flags = 0;
         timeNs = 0;
         if (!stream->active || buffers == nullptr || buffers[0] == nullptr)
@@ -360,61 +426,117 @@ public:
             flags |= SOAPY_SDR_MORE_FRAGMENTS;
         return static_cast<int>(count);
     }
+    int writeStream(SoapySDR::Stream *handle, const void *const *buffers,
+                    size_t numElems, int &flags, long long,
+                    long timeoutUs) override
+    {
+        TxStream *stream = checkedTx(handle);
+        if (!stream->active || buffers == nullptr || buffers[0] == nullptr)
+            return SOAPY_SDR_STREAM_ERROR;
+        if (flags != 0)
+            return SOAPY_SDR_NOT_SUPPORTED;
+        if (numElems == 0) return 0;
+        if (!keepTxAlive(*stream)) return SOAPY_SDR_STREAM_ERROR;
+        std::vector<int16_t> wire(numElems * 2);
+        if (stream->format == SOAPY_SDR_CF32) {
+            const auto *input = static_cast<const std::complex<float> *>(buffers[0]);
+            for (size_t index = 0; index < numElems; ++index) {
+                wire[index * 2] = normalizedS16(input[index].real());
+                wire[index * 2 + 1] = normalizedS16(-input[index].imag());
+            }
+        } else {
+            const auto *input = static_cast<const int16_t *>(buffers[0]);
+            for (size_t index = 0; index < numElems; ++index) {
+                wire[index * 2] = input[index * 2];
+                wire[index * 2 + 1] = input[index * 2 + 1] == INT16_MIN
+                    ? INT16_MAX : static_cast<int16_t>(-input[index * 2 + 1]);
+            }
+        }
+        const int sent = sendTxBytes(stream->socket.get(), wire.data(),
+                                     wire.size() * sizeof(int16_t), timeoutUs);
+        if (sent < 0) return sent;
+        stream->submittedFrames += numElems;
+        if (!stream->keyed && stream->submittedFrames > 24000) {
+            const HttpResponse keyed = leaseRequest(
+                "PUT", "/v1/tx/ptt/start", stream->lease);
+            if (keyed.status == 200) stream->keyed = true;
+            else if (keyed.status != 409) return SOAPY_SDR_STREAM_ERROR;
+        }
+        return static_cast<int>(numElems);
+    }
     void setFrequency(int direction, size_t channel, double frequency,
                       const SoapySDR::Kwargs &) override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         if (!tuningEnabled_)
             throw std::runtime_error("flex1500: daemon RX tuning is disabled");
         if (!std::isfinite(frequency) || frequency < MIN_FREQUENCY ||
             frequency > MAX_FREQUENCY)
             throw std::runtime_error("flex1500: frequency outside 100 kHz..54 MHz");
+        if (direction == SOAPY_SDR_TX && !txFrequencyAllowed(frequency))
+            throw std::runtime_error(
+                "flex1500: TX center plus/minus 24 kHz must fit an allowed band");
         const uint32_t rounded = static_cast<uint32_t>(std::llround(frequency));
         const HttpResponse response = request(host_, port_, "PUT",
             "/v1/radio/frequency/" + std::to_string(rounded));
         if (response.status != 200)
             throw std::runtime_error("flex1500: daemon rejected RX frequency");
         frequency_ = rounded;
-        if (stream_ != nullptr && stream_->active) {
-            stream_->socket.close();
+        if (direction == SOAPY_SDR_RX && rxStream_ != nullptr &&
+            rxStream_->active) {
+            rxStream_->socket.close();
             HttpResponse replacement = request(host_, port_, "GET",
                                                 "/v1/stream/iq", true);
             if (replacement.status != 200) {
-                stream_->active = false;
+                rxStream_->active = false;
                 throw std::runtime_error(
                     "flex1500: tuned, but could not reconnect RX stream");
             }
-            stream_->socket = std::move(replacement.socket);
-            stream_->input.assign(replacement.body.begin(),
+            rxStream_->socket = std::move(replacement.socket);
+            rxStream_->input.assign(replacement.body.begin(),
                                   replacement.body.end());
-            stream_->samples.clear();
-            stream_->sampleOffset = 0;
-            stream_->haveSequence = false;
+            rxStream_->samples.clear();
+            rxStream_->sampleOffset = 0;
+            rxStream_->haveSequence = false;
         }
     }
     double getFrequency(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         return frequency_;
     }
     std::vector<std::string> listFrequencies(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         return {"RF"};
     }
     SoapySDR::RangeList getFrequencyRange(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
-        return {SoapySDR::Range(MIN_FREQUENCY, MAX_FREQUENCY, 1.0)};
+        checkChannel(direction, channel);
+        return direction == SOAPY_SDR_RX
+            ? SoapySDR::RangeList{SoapySDR::Range(
+                  MIN_FREQUENCY, MAX_FREQUENCY, 1.0)}
+            : TX_FREQUENCY_RANGES;
     }
     std::vector<std::string> listGains(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
-        return {"RX"};
+        checkChannel(direction, channel);
+        return {direction == SOAPY_SDR_RX ? "RX" : "TX"};
     }
     void setGain(int direction, size_t channel, double gain) override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
+        if (direction == SOAPY_SDR_TX) {
+            if (!std::isfinite(gain) || gain < 1.0 || gain > 100.0)
+                throw std::runtime_error("flex1500: TX drive must be 1..100 percent");
+            const int value = static_cast<int>(std::lround(gain));
+            const HttpResponse response = request(host_, port_, "PUT",
+                "/v1/radio/tx-drive/" + std::to_string(value));
+            if (response.status != 200)
+                throw std::runtime_error("flex1500: daemon rejected TX drive");
+            txDrive_ = value;
+            return;
+        }
         const double rounded = std::round(gain / 10.0) * 10.0;
         if (!std::isfinite(gain) || std::abs(gain - rounded) > 0.001 ||
             rounded < -10.0 || rounded > 30.0)
@@ -428,17 +550,23 @@ public:
     }
     double getGain(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
-        return gain_;
+        checkChannel(direction, channel);
+        return direction == SOAPY_SDR_RX ? gain_ : txDrive_;
     }
     SoapySDR::Range getGainRange(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
-        return SoapySDR::Range(-10.0, 30.0, 10.0);
+        checkChannel(direction, channel);
+        return direction == SOAPY_SDR_RX ? SoapySDR::Range(-10.0, 30.0, 10.0)
+                                         : SoapySDR::Range(1.0, 100.0, 1.0);
     }
     void setBandwidth(int direction, size_t channel, double bandwidth) override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
+        if (direction == SOAPY_SDR_TX) {
+            if (std::abs(bandwidth - SAMPLE_RATE) > 0.5)
+                throw std::runtime_error("flex1500: TX I/Q bandwidth is fixed at 48000 Hz");
+            return;
+        }
         if (!std::isfinite(bandwidth) || bandwidth < 100.0 || bandwidth > 20000.0)
             throw std::runtime_error("flex1500: bandwidth outside 100..20000 Hz");
         const uint32_t rounded = static_cast<uint32_t>(std::llround(bandwidth));
@@ -450,13 +578,15 @@ public:
     }
     double getBandwidth(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
-        return bandwidth_;
+        checkChannel(direction, channel);
+        return direction == SOAPY_SDR_RX ? bandwidth_ : SAMPLE_RATE;
     }
     SoapySDR::RangeList getBandwidthRange(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
-        return {SoapySDR::Range(100.0, 20000.0, 1.0)};
+        checkChannel(direction, channel);
+        return direction == SOAPY_SDR_RX
+            ? SoapySDR::RangeList{SoapySDR::Range(100.0, 20000.0, 1.0)}
+            : SoapySDR::RangeList{SoapySDR::Range(SAMPLE_RATE, SAMPLE_RATE)};
     }
     SoapySDR::ArgInfoList getSettingInfo(void) const override
     {
@@ -492,38 +622,165 @@ public:
     }
     void setSampleRate(int direction, size_t channel, double rate) override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         if (std::abs(rate - SAMPLE_RATE) > 0.5)
             throw std::runtime_error("flex1500: sample rate is fixed at 48000");
     }
     double getSampleRate(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         return SAMPLE_RATE;
     }
     std::vector<double> listSampleRates(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         return {SAMPLE_RATE};
     }
     SoapySDR::RangeList getSampleRateRange(int direction, size_t channel) const override
     {
-        checkRx(direction, channel);
+        checkChannel(direction, channel);
         return {SoapySDR::Range(SAMPLE_RATE, SAMPLE_RATE)};
     }
 
 private:
-    void checkRx(int direction, size_t channel) const
+    void checkChannel(int direction, size_t channel) const
     {
-        if (direction != SOAPY_SDR_RX || channel != 0)
-            throw std::runtime_error("flex1500: only RX channel 0 is supported");
+        if (channel != 0 || (direction != SOAPY_SDR_RX &&
+            direction != SOAPY_SDR_TX) ||
+            (direction == SOAPY_SDR_TX && !daemonTransmitEnabled_))
+            throw std::runtime_error("flex1500: requested channel is unavailable");
     }
-    RxStream *checked(SoapySDR::Stream *handle) const
+    int checkedDirection(SoapySDR::Stream *handle) const
+    {
+        if (handle == reinterpret_cast<SoapySDR::Stream *>(rxStream_))
+            return SOAPY_SDR_RX;
+        if (handle == reinterpret_cast<SoapySDR::Stream *>(txStream_))
+            return SOAPY_SDR_TX;
+        throw std::runtime_error("flex1500: invalid stream handle");
+    }
+    RxStream *checkedRx(SoapySDR::Stream *handle) const
     {
         auto *stream = reinterpret_cast<RxStream *>(handle);
-        if (stream == nullptr || stream != stream_)
+        if (stream == nullptr || stream != rxStream_)
             throw std::runtime_error("flex1500: invalid stream handle");
         return stream;
+    }
+    TxStream *checkedTx(SoapySDR::Stream *handle) const
+    {
+        auto *stream = reinterpret_cast<TxStream *>(handle);
+        if (stream == nullptr || stream != txStream_)
+            throw std::runtime_error("flex1500: invalid TX stream handle");
+        return stream;
+    }
+    HttpResponse leaseRequest(const std::string &method,
+                              const std::string &path, uint64_t lease,
+                              bool keepSocket = false)
+    {
+        return request(host_, port_, method, path, keepSocket, {},
+            {"X-Flex1500-TX-Lease: " + std::to_string(lease)});
+    }
+    int activateTx(TxStream &stream)
+    {
+        if (stream.active) return 0;
+        std::ostringstream profile;
+        profile << "{\"mode\":\"iq\",\"source\":\"iq\","
+                << "\"drive_percent\":" << static_cast<int>(txDrive_)
+                << ",\"sample_rate\":48000,"
+                << "\"sample_format\":\"cs16le\",\"channels\":1}";
+        const HttpResponse acquired = request(
+            host_, port_, "POST", "/v1/tx/sessions", false, profile.str(),
+            {"Content-Type: application/json"});
+        if (acquired.status != 201) return SOAPY_SDR_STREAM_ERROR;
+        const double leaseNumber = jsonNumber(acquired.body, "lease", 0.0);
+        if (!std::isfinite(leaseNumber) || leaseNumber < 1.0)
+            return SOAPY_SDR_CORRUPTION;
+        stream.lease = static_cast<uint64_t>(leaseNumber);
+        HttpResponse connected = leaseRequest(
+            "CONNECT", "/v1/tx/stream", stream.lease, true);
+        if (connected.status != 200) {
+            try {
+                (void)leaseRequest("DELETE", "/v1/tx/sessions/current",
+                                   stream.lease);
+            } catch (...) {}
+            stream.lease = 0;
+            return SOAPY_SDR_STREAM_ERROR;
+        }
+        stream.socket = std::move(connected.socket);
+        stream.submittedFrames = 0;
+        stream.keyed = false;
+        stream.active = true;
+        stream.lastKeepalive = std::chrono::steady_clock::now();
+        return 0;
+    }
+    void stopTx(TxStream &stream) noexcept
+    {
+        if (stream.lease != 0) {
+            try {
+                if (stream.keyed)
+                    (void)leaseRequest("PUT", "/v1/tx/ptt/stop",
+                                       stream.lease);
+                (void)leaseRequest("DELETE", "/v1/tx/sessions/current",
+                                   stream.lease);
+            } catch (...) {}
+        }
+        stream.socket.close();
+        stream.lease = 0;
+        stream.submittedFrames = 0;
+        stream.keyed = false;
+        stream.active = false;
+    }
+    bool keepTxAlive(TxStream &stream)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - stream.lastKeepalive < std::chrono::seconds(5)) return true;
+        const HttpResponse response = leaseRequest(
+            "PUT", "/v1/tx/sessions/keepalive", stream.lease);
+        if (response.status != 200) return false;
+        stream.lastKeepalive = now;
+        return true;
+    }
+    static int sendTxBytes(int fd, const void *data, size_t length,
+                           long timeoutUs)
+    {
+        const auto *bytes = static_cast<const uint8_t *>(data);
+        const auto start = std::chrono::steady_clock::now();
+        size_t sent = 0;
+        while (sent < length) {
+            const ssize_t count = ::send(fd, bytes + sent, length - sent,
+                                         MSG_NOSIGNAL | MSG_DONTWAIT);
+            if (count > 0) {
+                sent += static_cast<size_t>(count);
+                continue;
+            }
+            if (count < 0 && errno == EINTR) continue;
+            if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                return SOAPY_SDR_STREAM_ERROR;
+            long remaining = timeoutUs;
+            if (timeoutUs >= 0) {
+                const auto elapsed = std::chrono::duration_cast<
+                    std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - start).count();
+                remaining -= static_cast<long>(elapsed);
+                if (remaining <= 0) return SOAPY_SDR_TIMEOUT;
+            }
+            pollfd writable{fd, POLLOUT, 0};
+            const int milliseconds = remaining < 0 ? -1 :
+                static_cast<int>((remaining + 999) / 1000);
+            int ready;
+            do ready = ::poll(&writable, 1, milliseconds);
+            while (ready < 0 && errno == EINTR);
+            if (ready == 0) return SOAPY_SDR_TIMEOUT;
+            if (ready < 0 || (writable.revents &
+                (POLLERR | POLLHUP | POLLNVAL))) return SOAPY_SDR_STREAM_ERROR;
+        }
+        return 0;
+    }
+    static int16_t normalizedS16(float value)
+    {
+        if (!std::isfinite(value)) return 0;
+        const long rounded = std::lround(value * 32767.0f);
+        return static_cast<int16_t>(std::max<long>(-32768,
+            std::min<long>(32767, rounded)));
     }
     static int16_t toS16(float value)
     {
@@ -597,9 +854,11 @@ private:
     bool daemonTransmitEnabled_ = false;
     double frequency_ = 0.0;
     double gain_ = 20.0;
+    double txDrive_ = 100.0;
     double bandwidth_ = 6000.0;
     double squelch_ = -120.0;
-    RxStream *stream_ = nullptr;
+    RxStream *rxStream_ = nullptr;
+    TxStream *txStream_ = nullptr;
 };
 
 SoapySDR::KwargsList findFlex1500(const SoapySDR::Kwargs &args)

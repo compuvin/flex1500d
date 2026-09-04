@@ -10,7 +10,9 @@ API version 1 does not yet provide authentication or transport encryption.
 Treat it as a trusted-LAN interface: restrict the port with the daemon host's
 firewall, do not create an internet port-forward, and do not expose it on an
 untrusted Wi-Fi network. Secure authenticated/encrypted access remains a
-separate roadmap item.
+separate roadmap item. The proposed separation between API credentials and TX
+ownership, including SoapySDR credential handling, is recorded in
+[API and SoapySDR authentication notes](API_AUTHENTICATION_DESIGN.md).
 
 The offline server cannot open the radio:
 
@@ -50,8 +52,10 @@ Transmit diagnostics are also reported:
 
 - `tx_starts` and `tx_stops` count successful Tune starts and all active-Tune
   stop attempts;
-- `tx_underruns` is ready for the future continuous TX scheduler and remains
-  zero while only the fixed Tune stream is available;
+- `tx_underruns`, `tx_clipped_frames`, `tx_limited_frames`, and
+  `tx_dropped_microphone_frames` report live microphone-stream quality;
+- `tx_audio_meter_valid` and the input, post-gain, and output peak/RMS dBFS
+  fields describe the current or most recently started microphone stream;
 - `tx_rejected_ownership_requests` counts busy starts and invalid or mismatched
   Tune lease operations;
 - `tx_watchdog_stops` counts lease-expiry and hard-limit stops; and
@@ -77,8 +81,8 @@ through those fields. The route also reports whether RX tuning is enabled and
 the current frequency/filter when known. It also reports
 the host receive mode and nominal DSP bandwidth. The fields
 `physical_inputs_known`, `mic_ptt`, `flexwire_ptt`, `dash`, and `dot` expose the
-latest receive-only endpoint-`0x83` observation. They are diagnostic state;
-the daemon does not act on them.
+latest endpoint-`0x83` observation. Physical microphone PTT acts on the
+transmitter only in the explicitly transmit-enabled daemon mode.
 
 ## Receive demodulator mode
 
@@ -183,13 +187,43 @@ These routes are available through the LAN API:
 - `PUT /v1/radio/tune/keepalive/LEASE` renews its 15-second watchdog; and
 - `PUT /v1/radio/tune/stop/LEASE` stops immediately.
 
+Tune start is rejected with `422 tx_frequency_not_allowed` unless the current
+frequency is inside the daemon's configured amateur-band allocations. The API
+checks this before acquiring a lease, and the hardware-start callback checks it
+again immediately before starting the carrier. This is a coarse safety guard,
+not a substitute for the operator's license-class, subband, mode, or geographic
+requirements.
+
 The transmit-enabled daemon also accepts `PUT /v1/radio/tx-drive/PERCENT`
-(1–100) and `PUT /v1/radio/mic-gain/DB` (0–70 dB) while unkeyed. Defaults are
-50% drive and 10 dB microphone gain, matching PowerSDR's factory MIC control
-value and scaling. These configure the immutable profile
+(1–100) and `PUT /v1/radio/mic-gain/DB` (0–70 dB) while unkeyed. General
+voice/data TX defaults to 100% drive and 10 dB microphone gain. On this 5 W
+QRP radio, the full-drive default is an intentional operator policy choice.
+These configure the immutable profile
 captured by the next physical PTT press; neither route keys the transmitter.
 Frequency, mode, drive, and microphone-gain changes return `409 Conflict` while
-any TX owner is active.
+any TX owner is active. Filter-bandwidth, compressor, and maximum-key-timeout
+changes are rejected as well. No rejected setting is staged: unkey, apply the
+change, and key again. Receive squelch remains adjustable because it is
+host-only and cannot affect RF or transmitted samples.
+
+An optional shared speech compressor is disabled by default and may be changed
+only while unkeyed:
+
+```http
+PUT /v1/radio/tx-compressor/on HTTP/1.1
+```
+
+Use `off` to disable it. The initial implementation uses a conservative static
+3:1 curve above -12 dBFS. The final complex-I/Q limiter is always enabled and
+caps output at the magnitude selected by TX drive; it cannot be disabled.
+Drive is an I/Q-amplitude percentage, not calibrated RF wattage. Every general
+voice/data source is capped at 100% (24,890-count complex magnitude), including
+raw network I/Q. The dedicated Tune operation remains the separately validated,
+fixed full-drive carrier.
+`GET /v1/radio` reports `tx_compressor_enabled`, while `GET /v1/status` reports
+meter values and limiter activity. Physical-microphone gain remains a source-
+specific control. Future HTTP and Soapy audio sources should have separate
+source gains and then enter this same compressor, limiter, and meter path.
 
 Physical microphone TX additionally requires USB or LSB and a known frequency
 inside the daemon's conservative U.S. amateur voice-allocation policy: the
@@ -216,7 +250,32 @@ frequency restoration, PA-filter reset, and endpoint-stream cancellation.
 The lease is a safety/ownership mechanism, not access control. API
 authentication remains a separate project item. Until then,
 firewall access to the API must be limited to trusted station-control hosts.
-SoapySDR remains receive-only and does not expose Tune.
+SoapySDR does not expose the dedicated Tune operation. Its optional TX channel
+uses the general leased raw-I/Q routes described below.
+
+The transmit-enabled daemon implements leased general network-transmit session,
+PTT, and sample-upload routes for mono `s16le` audio and `cs16le` I/Q. They use
+a 500 ms prebuffer, 15-second lease watchdog, one-second keyed-data watchdog,
+the shared maximum-key timer, mandatory output limiting, and disconnect unkey.
+The route contract and SoapySDR mapping are specified in
+[General TX/PTT API design](GENERAL_TX_API_DESIGN.md). These routes have offline
+test coverage; USB PCM audio and raw I/Q have also completed bounded live
+dummy-load tests. Individual modes, bands, and applications still require the
+validation tracked in the engineering checklist. Operational responsibilities,
+supported paths, limitations, and normal and emergency unkey procedures are in
+the [transmit operator guide](TX_OPERATOR_GUIDE.md).
+
+The browser test page uses `POST /v1/tx/audio` for bounded mono `s16le` PCM
+blocks under the same TX lease. The first block attaches the logical stream;
+each accepted block refreshes the one-second sample-data watchdog. Bodies must
+contain an even number of bytes and are limited to 9,600 bytes (100 ms at
+48 kHz). This route accepts only an audio-source session and does not replace
+the persistent `CONNECT` tunnel intended for native clients.
+
+Browser microphone capture is enabled only in a secure browser context.
+`http://localhost:15000/test` qualifies on the daemon host; a page opened from
+another LAN computer normally requires future HTTPS support. Tune and ordinary
+radio controls do not require microphone permission.
 
 ## IQ stream endpoint
 
@@ -253,10 +312,10 @@ without assuming a fixed network chunk size.
 
 ## Unsupported routes
 
-Unknown paths return `404` JSON. Outside the separately armed RX-frequency
-route, no PTT, TX, firmware, EEPROM, antenna, gain, PA-filter, or other control
-endpoint exists in API version 1. The successful standalone TX probes have no
-daemon call path; representative PTT/TX requests are tested to remain 404.
+Unknown paths return `404` JSON. General PTT/TX routes exist only in the
+explicitly transmit-enabled daemon; receive-only modes keep them unavailable.
+No firmware, EEPROM, antenna, or direct PA-filter route exists. The standalone
+TX probes have no daemon call path.
 
 ## Offline verification
 
@@ -278,7 +337,7 @@ command uses exclusive creation and refuses to overwrite an existing file.
   guarded TX-research build adds five offline/interlock tests for a total of
   24. Coverage includes rejection of unarmed radio modes, partial HTTP-header
   detection, radio metadata, publisher counters, frequency parsing/filter
-  boundaries, offline tune rejection, absent TX routes, and—only in the
+  boundaries, offline tune rejection, receive-mode TX rejection, and—only in the
   research build—isolated TX-probe arming strings.
 
 ## Receive API hardening validation

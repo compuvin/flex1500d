@@ -26,7 +26,7 @@ int main(void)
     CHECK(flex1500_usb_rx_tune_carrier_stop(receiver) != 0);
     CHECK(!flex1500_usb_rx_tune_carrier_active(receiver));
     CHECK(flex1500_usb_rx_microphone_tx_start(
-              receiver, FLEX1500_TX_USB, 50, 1.0f) != 0);
+        receiver, FLEX1500_TX_USB, 50, 1.0f, false) != 0);
     CHECK(flex1500_usb_rx_microphone_tx_stop(receiver) != 0);
     CHECK(flex1500_usb_rx_microphone_tx_stats(receiver) != NULL);
     CHECK(flex1500_usb_rx_microphone_tx_stats(receiver)->microphone_frames ==

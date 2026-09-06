@@ -1,8 +1,86 @@
 # Release notes
 
-## v0.1.0 — initial experimental receive release
+## v0.2.0 — experimental network SDR and transmit release
 
-Planned tag: `v0.1.0`
+This experimental release expands `flex1500d` from its initial receive-only
+foundation into a practical trusted-LAN SDR with guarded transmit support. It
+is intended for technically experienced amateur-radio operators who can
+independently monitor frequency, modulation, power, and load conditions.
+
+The project remains unaffiliated with, unendorsed by, and unsupported by
+FlexRadio Systems. The network API is unauthenticated and unencrypted and must
+not be exposed to an untrusted network or the public internet.
+
+### Highlights
+
+- Native Linux control and continuous 48 ksample/s receive I/Q for the
+  FLEX-1500, tested with firmware `0.5.3.24`
+- LAN-accessible HTTP API and browser test receiver
+- SoapySDR RX/TX adapter, live validated with SDR Oxide
+- AM, FM, USB, LSB, and CW receive DSP with adjustable bandwidth and squelch
+- Five hardware receive gain/attenuation settings
+- Up to four concurrent IQ consumers
+- Persistent first-client station ownership across HTTP and SoapySDR
+- Receive-only secondary clients with independent tuning inside the primary
+  station's plus/minus 24 kHz IQ window
+- Hardware frequency, band, TX setting, and transmit rejection for secondary
+  clients
+- Physical microphone PTT with local priority, USB/LSB audio conversion,
+  metering, clipping protection, optional compression, and maximum-key timer
+- HTTP PCM-audio and raw-I/Q TX plus SoapySDR raw-I/Q TX
+- Capture-matched 5 W Tune carrier
+- Frequency-allocation checks, PA-filter tracking, exclusive TX operations,
+  prebuffer/data watchdogs, disconnect cleanup, and USB recovery diagnostics
+
+HTTP-primary/Soapy-secondary and Soapy-primary/HTTP-secondary ownership were
+both live validated. Soapy TX required both the persistent station-control
+lease and subordinate TX-operation lease throughout stream connection, PTT,
+keepalive, and release; the complete lifecycle is now covered by the offline
+mock-daemon test.
+
+### Experimental Debian package
+
+The release includes an experimental `amd64` Debian package built in Release
+mode. It installs:
+
+- the `flex1500d` daemon under `/usr/bin`;
+- `libflex1500Support.so` in SoapySDR's module directory;
+- the FLEX-1500 udev access rule; and
+- the README, release notes, and GPLv3 license under `/usr/share/doc`.
+
+The package declares its shared-library dependencies automatically. It does not
+install or start a systemd service. It is a convenience package, not a
+distribution-neutral installer; users on other architectures or incompatible
+Debian-family releases should build from source. The project tests source builds
+on ARM64 through GitHub Actions, but this release does not include an ARM64
+package.
+
+### Important limitations
+
+- TX behavior remains experimental. Use a suitable dummy load for initial
+  validation and independently monitor every transmission.
+- API version 1 has no authentication or transport encryption.
+- SoapySDR TX has been validated with SDR Oxide, not multiple established SDR
+  transmit applications.
+- Browser microphone capture normally requires localhost or HTTPS.
+- There is no packaged systemd service or distribution package yet.
+- The FLEX-1500 provides no host-readable forward/reflected power, SWR, or PA
+  temperature telemetry; external station instruments remain necessary.
+- Daemon-generated AM, FM, CW, and digital-mode TX are not implemented. Raw-IQ
+  clients are responsible for the emissions they generate.
+
+### Validation
+
+- Clean Release build with warnings treated as errors and standalone TX
+  research probes excluded
+- 31/31 offline tests passing in the packaged Release configuration; 48/48 in
+  the full development configuration
+- No automated test opens, commands, or transmits with a radio
+- Live receive, browser audio/microphone TX, physical microphone TX, Tune,
+  SoapySDR TX, ownership in both client directions, and secondary-client local
+  tuning validated by KB1JDX
+
+## v0.1.0 — initial experimental receive release
 
 This is the first public experimental release of `flex1500d`, a native Linux
 userspace implementation for receiving with the FlexRadio FLEX-1500 over USB.
@@ -87,8 +165,3 @@ The next major goals are dependable everyday RX operation, service packaging,
 secure local-network access, established SDR-application compatibility through
 an adapter, improved receiver controls and DSP, and support for additional
 clients. The live roadmap is maintained in `README.md`.
-
-### Tagging status
-
-The version is selected, but the `v0.1.0` Git tag will be created only after
-the initial commit has been reviewed and approved by KB1JDX.

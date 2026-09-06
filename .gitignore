@@ -1,4 +1,6 @@
 /build*/
+/_CPack_Packages/
+/*.deb
 /pcaps/
 /.agents/
 /.codex/

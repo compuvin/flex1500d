@@ -2,9 +2,10 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(flex1500d VERSION 0.1.0 LANGUAGES C CXX)
+project(flex1500d VERSION 0.2.0 LANGUAGES C CXX)
 
 include(CTest)
+include(GNUInstallDirs)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
@@ -32,6 +33,42 @@ if(FLEX1500_BUILD_SOAPYSDR)
         -Wall -Wextra -Wpedantic
     )
 endif()
+
+install(FILES 70-flex1500.rules
+    DESTINATION lib/udev/rules.d
+)
+install(FILES README.md RELEASE_NOTES.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+)
+install(FILES LICENSE
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    RENAME copyright
+)
+
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "flex1500d")
+set(CPACK_PACKAGE_VENDOR "KB1JDX")
+set(CPACK_PACKAGE_CONTACT "compuvin@users.noreply.github.com")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Experimental Linux network SDR daemon for the FLEX-1500")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER
+    "KB1JDX <compuvin@users.noreply.github.com>")
+set(CPACK_DEBIAN_PACKAGE_SECTION "hamradio")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+execute_process(
+    COMMAND dpkg --print-architecture
+    OUTPUT_VARIABLE CPACK_DEBIAN_PACKAGE_ARCHITECTURE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT CPACK_DEBIAN_PACKAGE_ARCHITECTURE)
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE ${CMAKE_SYSTEM_PROCESSOR})
+endif()
+set(CPACK_PACKAGE_FILE_NAME
+    "flex1500d_${PROJECT_VERSION}_${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
+include(CPack)
 
 option(FLEX1500_BUILD_TX_RESEARCH
     "Build standalone TX research probes (execution remains separately armed)"
@@ -99,6 +136,9 @@ target_compile_options(flex1500-info PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(flex1500d src/flex1500d.c)
 target_link_libraries(flex1500d PRIVATE flex1500_usb_rx)
 target_compile_options(flex1500d PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS flex1500d
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 
 add_executable(flex1500-status-probe src/flex1500_status_probe.c)
 target_link_libraries(flex1500-status-probe PRIVATE

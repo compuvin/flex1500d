@@ -37,6 +37,7 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
 - [x] Expose the API to other computers on a trusted local network, turning a
   USB-connected FLEX-1500 into a practical network-accessible SDR.
 - [ ] Secure remote API access with authentication and transport encryption.
+  (See: [API and SoapySDR authentication design](docs/API_AUTHENTICATION_DESIGN.md).)
 - [x] Build an initial SoapySDR compatibility adapter so established SDR
   applications can connect to the `flex1500d` API and use the FLEX-1500 for
   receive; first validated with SDR Oxide.
@@ -48,6 +49,7 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
   receive stream.
 - [ ] Continue documenting the reverse-engineered FLEX-1500 protocol so other
   amateur-radio operators and developers can reproduce and improve the work.
+  (See: [identified features not yet implemented](docs/UNIMPLEMENTED_FEATURES.md).)
 - [x] Keep transmit disabled in the current daemon and API while preserving
   the isolated experimental findings for future research.
 - [ ] Before considering any future daemon transmit support, thoroughly
@@ -162,12 +164,31 @@ sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev \
   libsoapysdr-dev soapysdr-tools
 ```
 
-The browser test page additionally requires a browser with `AudioWorklet` and
-a 48 kHz `AudioContext`.
+The browser test page requires a browser with a 48 kHz `AudioContext`.
+`AudioWorklet` is preferred, with a compatible script-processor fallback.
+
+### Experimental Debian package
+
+GitHub releases may include an experimental `amd64` package. Install a
+downloaded package and its declared dependencies with:
+
+```sh
+sudo apt install ./flex1500d_0.2.0_amd64.deb
+```
+
+The package installs `flex1500d`, the SoapySDR module, the udev access rule,
+and project documentation. It does not install or start a systemd service.
+Unplug and reconnect the FLEX-1500 after installation so the new udev rule is
+applied. Remove the package with `sudo apt remove flex1500d`.
+
+The package is built for the Ubuntu version used to create the release and may
+not run on older Debian-family systems whose glibc or SoapySDR ABI differs.
+Build from source when the packaged dependencies are incompatible.
 
 ## Build and test
 
-The normal build excludes all TX-owned research executables:
+The normal build includes the standalone TX research executables, whose
+execution still requires their exact safety arming strings:
 
 ```sh
 cmake -S . -B build
@@ -175,12 +196,14 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The clean default configuration currently runs 46 offline tests. Building and
+The clean default configuration currently runs 48 offline tests. Building and
 testing does not enumerate, open, initialize, tune, or otherwise access the
 radio.
 
-The standard build produces both the API daemon and the receive-only
-`flex1500Support` module. Its adapter test uses a synthetic loopback daemon.
+The standard build produces both the API daemon and the conditional RX/TX
+`flex1500Support` module. The adapter exposes TX only when connected to an
+explicitly transmit-enabled daemon as the station owner. Its test uses a
+synthetic loopback daemon.
 See [the SoapySDR adapter guide](docs/SOAPYSDR.md).
 
 SoapySDR can be explicitly omitted for a constrained or daemon-only build with

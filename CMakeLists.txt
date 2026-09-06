@@ -64,6 +64,7 @@ target_compile_options(flex1500_tx_dsp PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(flex1500_tune_control STATIC
     src/network_tx.c
+    src/station_owner.c
     src/tune_control.c
     src/tx_control.c
 )
@@ -354,6 +355,11 @@ if(BUILD_TESTING)
     target_link_libraries(network-tx-test PRIVATE flex1500_tune_control)
     target_compile_options(network-tx-test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME network-tx COMMAND network-tx-test)
+
+    add_executable(station-owner-test tests/station_owner_test.c)
+    target_link_libraries(station-owner-test PRIVATE flex1500_tune_control)
+    target_compile_options(station-owner-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME station-owner COMMAND station-owner-test)
     add_test(NAME mic-iq-offline-requires-explicit-drive
         COMMAND flex1500-mic-iq-offline input.pcm output.iq16le usb)
     set_tests_properties(mic-iq-offline-requires-explicit-drive PROPERTIES

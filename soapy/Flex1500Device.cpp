@@ -17,6 +17,8 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <netdb.h>
 #include <poll.h>
 #include <stdexcept>
@@ -24,10 +26,20 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 namespace {
+
+struct SharedStationLease {
+    uint64_t lease = 0;
+    std::size_t references = 0;
+};
+
+std::mutex sharedStationMutex;
+std::map<std::string, SharedStationLease> sharedStationLeases;
 
 constexpr double SAMPLE_RATE = 48000.0;
 constexpr double MIN_FREQUENCY = 100000.0;
@@ -287,10 +299,53 @@ public:
         txDrive_ = jsonNumber(radio.body, "tx_drive_percent", 100.0);
         bandwidth_ = jsonNumber(radio.body, "rx_bandwidth_hz", 6000.0);
         squelch_ = jsonNumber(radio.body, "rx_squelch_db", -120.0);
+        if (daemonTransmitEnabled_) {
+            stationKey_ = host_ + ":" + std::to_string(port_);
+            std::lock_guard<std::mutex> lock(sharedStationMutex);
+            auto existing = sharedStationLeases.find(stationKey_);
+            if (existing != sharedStationLeases.end()) {
+                ++existing->second.references;
+                stationLease_ = existing->second.lease;
+                stationOwner_ = true;
+            } else {
+                const HttpResponse owner = request(host_, port_, "POST",
+                                                   "/v1/control/owner");
+                if (owner.status == 201) {
+                    stationLease_ = static_cast<uint64_t>(
+                        jsonNumber(owner.body, "lease", 0.0));
+                    stationOwner_ = stationLease_ != 0;
+                    if (stationOwner_)
+                        sharedStationLeases[stationKey_] =
+                            {stationLease_, 1};
+                } else if (owner.status != 409) {
+                    throw std::runtime_error(
+                        "flex1500: station ownership request failed");
+                }
+            }
+            if (stationOwner_)
+                ownerThread_ = std::thread([this] { ownerKeepalive(); });
+        }
     }
     ~Flex1500Device() override
     {
         if (txStream_ != nullptr) stopTx(*txStream_);
+        ownerStop_ = true;
+        if (ownerThread_.joinable()) ownerThread_.join();
+        bool releaseStation = false;
+        if (stationOwner_) {
+            std::lock_guard<std::mutex> lock(sharedStationMutex);
+            auto existing = sharedStationLeases.find(stationKey_);
+            if (existing != sharedStationLeases.end() &&
+                existing->second.references > 0) {
+                releaseStation = --existing->second.references == 0;
+                if (releaseStation) sharedStationLeases.erase(existing);
+            }
+        }
+        if (releaseStation) {
+            try {
+                (void)controlRequest("DELETE", "/v1/control/owner");
+            } catch (...) {}
+        }
         delete rxStream_;
         delete txStream_;
     }
@@ -303,12 +358,13 @@ public:
                 {"receive_only", daemonTransmitEnabled_ ? "false" : "true"},
                 {"daemon_transmit_enabled",
                  daemonTransmitEnabled_ ? "true" : "false"},
+                {"station_owner", stationOwner_ ? "true" : "false"},
                 {"transport", "flex1500d API v1"}};
     }
     size_t getNumChannels(int direction) const override
     {
         return direction == SOAPY_SDR_RX ||
-            (direction == SOAPY_SDR_TX && daemonTransmitEnabled_) ? 1 : 0;
+            (direction == SOAPY_SDR_TX && stationOwner_) ? 1 : 0;
     }
     bool getFullDuplex(int, size_t) const override { return false; }
     std::vector<std::string> getStreamFormats(int direction, size_t channel) const override
@@ -410,13 +466,29 @@ public:
         if (stream->format == SOAPY_SDR_CF32) {
             auto *output = static_cast<std::complex<float> *>(buffers[0]);
             for (size_t index = 0; index < count; ++index) {
-                const auto sample = stream->samples[stream->sampleOffset + index];
+                auto sample = stream->samples[stream->sampleOffset + index];
+                if (rxOffsetHz_ != 0.0) {
+                    const std::complex<float> oscillator(
+                        std::cos(rxPhase_), std::sin(rxPhase_));
+                    sample *= oscillator;
+                    rxPhase_ += 2.0 * M_PI * rxOffsetHz_ / SAMPLE_RATE;
+                    if (rxPhase_ > M_PI) rxPhase_ -= 2.0 * M_PI;
+                    if (rxPhase_ < -M_PI) rxPhase_ += 2.0 * M_PI;
+                }
                 output[index] = {sample.real(), -sample.imag()};
             }
         } else {
             auto *output = static_cast<int16_t *>(buffers[0]);
             for (size_t index = 0; index < count; ++index) {
-                const auto sample = stream->samples[stream->sampleOffset + index];
+                auto sample = stream->samples[stream->sampleOffset + index];
+                if (rxOffsetHz_ != 0.0) {
+                    const std::complex<float> oscillator(
+                        std::cos(rxPhase_), std::sin(rxPhase_));
+                    sample *= oscillator;
+                    rxPhase_ += 2.0 * M_PI * rxOffsetHz_ / SAMPLE_RATE;
+                    if (rxPhase_ > M_PI) rxPhase_ -= 2.0 * M_PI;
+                    if (rxPhase_ < -M_PI) rxPhase_ += 2.0 * M_PI;
+                }
                 output[index * 2] = toS16(sample.real());
                 output[index * 2 + 1] = toS16(-sample.imag());
             }
@@ -468,6 +540,17 @@ public:
                       const SoapySDR::Kwargs &) override
     {
         checkChannel(direction, channel);
+        if (direction == SOAPY_SDR_RX && !stationOwner_) {
+            const HttpResponse radio = request(host_, port_, "GET", "/v1/radio");
+            const double center = jsonNumber(radio.body, "frequency_hz", 0.0);
+            if (radio.status != 200 || std::abs(frequency - center) > 24000.0)
+                throw std::runtime_error(
+                    "flex1500: receive-only tuning must remain within owner IQ window");
+            frequency_ = frequency;
+            rxOffsetHz_ = center - frequency;
+            rxPhase_ = 0.0;
+            return;
+        }
         if (!tuningEnabled_)
             throw std::runtime_error("flex1500: daemon RX tuning is disabled");
         if (!std::isfinite(frequency) || frequency < MIN_FREQUENCY ||
@@ -477,11 +560,16 @@ public:
             throw std::runtime_error(
                 "flex1500: TX center plus/minus 24 kHz must fit an allowed band");
         const uint32_t rounded = static_cast<uint32_t>(std::llround(frequency));
-        const HttpResponse response = request(host_, port_, "PUT",
+        const HttpResponse response = controlRequest("PUT",
             "/v1/radio/frequency/" + std::to_string(rounded));
         if (response.status != 200)
-            throw std::runtime_error("flex1500: daemon rejected RX frequency");
+            throw std::runtime_error("flex1500: daemon rejected RX frequency (HTTP " +
+                std::to_string(response.status) + "): " + response.body);
         frequency_ = rounded;
+        if (direction == SOAPY_SDR_RX) {
+            rxOffsetHz_ = 0.0;
+            rxPhase_ = 0.0;
+        }
         if (direction == SOAPY_SDR_RX && rxStream_ != nullptr &&
             rxStream_->active) {
             rxStream_->socket.close();
@@ -530,7 +618,7 @@ public:
             if (!std::isfinite(gain) || gain < 1.0 || gain > 100.0)
                 throw std::runtime_error("flex1500: TX drive must be 1..100 percent");
             const int value = static_cast<int>(std::lround(gain));
-            const HttpResponse response = request(host_, port_, "PUT",
+            const HttpResponse response = controlRequest("PUT",
                 "/v1/radio/tx-drive/" + std::to_string(value));
             if (response.status != 200)
                 throw std::runtime_error("flex1500: daemon rejected TX drive");
@@ -542,7 +630,7 @@ public:
             rounded < -10.0 || rounded > 30.0)
             throw std::runtime_error("flex1500: RX gain must be -10, 0, 10, 20, or 30 dB");
         const int value = static_cast<int>(rounded);
-        const HttpResponse response = request(host_, port_, "PUT",
+        const HttpResponse response = controlRequest("PUT",
             "/v1/radio/gain/" + std::to_string(value));
         if (response.status != 200)
             throw std::runtime_error("flex1500: daemon rejected RX gain");
@@ -570,7 +658,7 @@ public:
         if (!std::isfinite(bandwidth) || bandwidth < 100.0 || bandwidth > 20000.0)
             throw std::runtime_error("flex1500: bandwidth outside 100..20000 Hz");
         const uint32_t rounded = static_cast<uint32_t>(std::llround(bandwidth));
-        const HttpResponse response = request(host_, port_, "PUT",
+        const HttpResponse response = controlRequest("PUT",
             "/v1/radio/bandwidth/" + std::to_string(rounded));
         if (response.status != 200)
             throw std::runtime_error("flex1500: daemon rejected RX bandwidth");
@@ -608,7 +696,7 @@ public:
         const int threshold = std::stoi(value, &used);
         if (used != value.size() || threshold < -120 || threshold > 0)
             throw std::runtime_error("flex1500: squelch must be -120..0 dBFS");
-        const HttpResponse response = request(host_, port_, "PUT",
+        const HttpResponse response = controlRequest("PUT",
             "/v1/radio/squelch/" + std::to_string(threshold));
         if (response.status != 200)
             throw std::runtime_error("flex1500: daemon rejected RX squelch");
@@ -643,11 +731,74 @@ public:
     }
 
 private:
+    uint64_t currentStationLease() const
+    {
+        std::lock_guard<std::mutex> lock(sharedStationMutex);
+        const auto existing = sharedStationLeases.find(stationKey_);
+        return existing == sharedStationLeases.end()
+            ? stationLease_.load() : existing->second.lease;
+    }
+    HttpResponse controlRequest(const std::string &method,
+                                const std::string &path)
+    {
+        return request(host_, port_, method, path, false, {},
+            {"X-Flex1500-Control-Lease: " +
+             std::to_string(currentStationLease())});
+    }
+    void ownerKeepalive()
+    {
+        while (!ownerStop_) {
+            for (int tenth = 0; tenth < 50 && !ownerStop_; ++tenth)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (ownerStop_) break;
+            try {
+                const HttpResponse response = controlRequest(
+                    "PUT", "/v1/control/owner/keepalive");
+                if (response.status == 200) continue;
+                if (response.status == 410) {
+                    const HttpResponse reacquired = request(
+                        host_, port_, "POST", "/v1/control/owner");
+                    if (reacquired.status == 201) {
+                        const double lease = jsonNumber(
+                            reacquired.body, "lease", 0.0);
+                        if (std::isfinite(lease) && lease >= 1.0) {
+                            stationLease_ = static_cast<uint64_t>(lease);
+                            std::lock_guard<std::mutex> lock(
+                                sharedStationMutex);
+                            auto existing = sharedStationLeases.find(
+                                stationKey_);
+                            if (existing != sharedStationLeases.end())
+                                existing->second.lease = stationLease_;
+                            continue;
+                        }
+                    }
+                    if (reacquired.status != 409) continue;
+                    {
+                        std::lock_guard<std::mutex> lock(sharedStationMutex);
+                        const auto existing = sharedStationLeases.find(
+                            stationKey_);
+                        if (existing != sharedStationLeases.end() &&
+                            existing->second.lease != stationLease_) {
+                            stationLease_ = existing->second.lease;
+                            continue;
+                        }
+                    }
+                    stationOwner_ = false;
+                    break;
+                }
+            } catch (...) {
+                // A transient control connection failure does not surrender
+                // ownership. Retry; the daemon independently expires a truly
+                // abandoned lease and rejects TX under an invalid lease.
+            }
+        }
+    }
     void checkChannel(int direction, size_t channel) const
     {
         if (channel != 0 || (direction != SOAPY_SDR_RX &&
             direction != SOAPY_SDR_TX) ||
-            (direction == SOAPY_SDR_TX && !daemonTransmitEnabled_))
+            (direction == SOAPY_SDR_TX &&
+             (!daemonTransmitEnabled_ || !stationOwner_)))
             throw std::runtime_error("flex1500: requested channel is unavailable");
     }
     int checkedDirection(SoapySDR::Stream *handle) const
@@ -677,7 +828,9 @@ private:
                               bool keepSocket = false)
     {
         return request(host_, port_, method, path, keepSocket, {},
-            {"X-Flex1500-TX-Lease: " + std::to_string(lease)});
+            {"X-Flex1500-TX-Lease: " + std::to_string(lease),
+             "X-Flex1500-Control-Lease: " +
+                 std::to_string(currentStationLease())});
     }
     int activateTx(TxStream &stream)
     {
@@ -689,7 +842,9 @@ private:
                 << "\"sample_format\":\"cs16le\",\"channels\":1}";
         const HttpResponse acquired = request(
             host_, port_, "POST", "/v1/tx/sessions", false, profile.str(),
-            {"Content-Type: application/json"});
+            {"Content-Type: application/json",
+             "X-Flex1500-Control-Lease: " +
+                 std::to_string(currentStationLease())});
         if (acquired.status != 201) return SOAPY_SDR_STREAM_ERROR;
         const double leaseNumber = jsonNumber(acquired.body, "lease", 0.0);
         if (!std::isfinite(leaseNumber) || leaseNumber < 1.0)
@@ -852,11 +1007,18 @@ private:
     uint16_t port_;
     bool tuningEnabled_ = false;
     bool daemonTransmitEnabled_ = false;
+    std::string stationKey_;
+    std::atomic<bool> stationOwner_{false};
+    std::atomic<bool> ownerStop_{false};
+    std::atomic<uint64_t> stationLease_{0};
+    std::thread ownerThread_;
     double frequency_ = 0.0;
     double gain_ = 20.0;
     double txDrive_ = 100.0;
     double bandwidth_ = 6000.0;
     double squelch_ = -120.0;
+    double rxOffsetHz_ = 0.0;
+    double rxPhase_ = 0.0;
     RxStream *rxStream_ = nullptr;
     TxStream *txStream_ = nullptr;
 };

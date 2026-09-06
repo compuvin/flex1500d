@@ -5,6 +5,7 @@
 
 #include "flex1500/network.h"
 #include "flex1500/network_tx.h"
+#include "flex1500/station_owner.h"
 #include "flex1500/tune_control.h"
 
 #include <stdbool.h>
@@ -32,6 +33,8 @@ typedef struct flex1500_api_controller {
     uint64_t next_tune_lease;
     uint64_t next_tx_lease;
     flex1500_network_tx *network_tx;
+    uint64_t next_station_lease;
+    flex1500_station_owner *station_owner;
 } flex1500_api_controller;
 
 typedef enum flex1500_api_action {

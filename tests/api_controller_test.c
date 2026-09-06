@@ -334,5 +334,45 @@ int main(void)
         "POST /v1/tx/sessions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
         response, &length) == FLEX1500_API_RESPONSE);
     CHECK(strstr(response, "404 Not Found") != NULL);
+
+    flex1500_station_owner station_owner;
+    flex1500_station_owner_init(&station_owner);
+    flex1500_api_controller_init(&api, true, true, true);
+    api.station_owner = &station_owner;
+    api.next_station_lease = 900;
+    api.request_now_ms = 50000;
+    CHECK(dispatch(&api, "POST /v1/control/owner HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "201 Created") != NULL);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/frequency/14225000 HTTP/1.1\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "station_owned") != NULL);
+    CHECK(dispatch(&api,
+                   "POST /v1/tx/sessions HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "station_owned") != NULL);
+    api.tune_control = &tune;
+    api.next_tune_lease = 910;
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tune/start HTTP/1.1\r\nX-Flex1500-Control-Lease: 900\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL && tune.active);
+    CHECK(dispatch(&api,
+                   "DELETE /v1/control/owner HTTP/1.1\r\nX-Flex1500-Control-Lease: 900\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "transmitter_active") != NULL);
+    CHECK(dispatch(&api,
+                   "PUT /v1/radio/tune/stop/910 HTTP/1.1\r\nX-Flex1500-Control-Lease: 900\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL && !tune.active);
+    CHECK(dispatch(&api,
+                   "DELETE /v1/control/owner HTTP/1.1\r\nX-Flex1500-Control-Lease: 901\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "410 Gone") != NULL);
+    CHECK(dispatch(&api,
+                   "DELETE /v1/control/owner HTTP/1.1\r\nX-Flex1500-Control-Lease: 900\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL);
     return 0;
 }

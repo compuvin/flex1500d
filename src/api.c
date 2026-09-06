@@ -119,6 +119,19 @@ static bool request_lease(const char *request, uint64_t *lease)
     return true;
 }
 
+static bool station_request_authorized(
+    const flex1500_api_controller *controller, const char *request)
+{
+    if (controller->station_owner == NULL) return true;
+    if (!controller->station_owner->held) return false;
+    const char *value = request_header(request, "X-Flex1500-Control-Lease");
+    if (value == NULL) return false;
+    char *end = NULL;
+    const unsigned long long lease = strtoull(value, &end, 10);
+    return end != value && flex1500_station_owner_matches(
+        controller->station_owner, (uint64_t)lease);
+}
+
 static bool parse_tx_profile(const char *request,
                              flex1500_network_tx_profile *profile)
 {
@@ -192,6 +205,7 @@ void flex1500_api_controller_init(flex1500_api_controller *controller,
         .tx_microphone_gain_db = 10,
         .next_tune_lease = 1,
         .next_tx_lease = 1,
+        .next_station_lease = 1,
     };
 }
 
@@ -270,6 +284,47 @@ flex1500_api_action flex1500_api_dispatch(
         request, tx_compressor_prefix, sizeof(tx_compressor_prefix) - 1) == 0;
 
     const bool tx_session_create = request_is(request, "POST", "/v1/tx/sessions");
+    const bool owner_acquire = request_is(request, "POST", "/v1/control/owner");
+    const bool owner_keepalive = request_is(request, "PUT", "/v1/control/owner/keepalive");
+    const bool owner_release = request_is(request, "DELETE", "/v1/control/owner");
+    if (owner_acquire || owner_keepalive || owner_release) {
+        uint64_t lease = 0;
+        flex1500_station_owner_result result = FLEX1500_STATION_OWNER_INVALID;
+        if (controller->station_owner == NULL) {
+            *response_length = json_response("404 Not Found", "{\"error\":\"not found\"}\n", response, capacity);
+            return FLEX1500_API_RESPONSE;
+        }
+        if (owner_acquire) {
+            lease = controller->next_station_lease++;
+            if (lease == 0) lease = controller->next_station_lease++;
+            result = flex1500_station_owner_acquire(controller->station_owner,
+                                                     lease, controller->request_now_ms);
+        } else {
+            const char *value = request_header(request, "X-Flex1500-Control-Lease");
+            if (value != NULL) lease = strtoull(value, NULL, 10);
+            if (owner_release && transmitter_active(controller)) {
+                *response_length = json_response(
+                    "409 Conflict", "{\"error\":\"transmitter_active\"}\n",
+                    response, capacity);
+                return FLEX1500_API_RESPONSE;
+            }
+            result = owner_keepalive
+                ? flex1500_station_owner_keepalive(controller->station_owner,
+                      lease, controller->request_now_ms)
+                : flex1500_station_owner_release(controller->station_owner, lease);
+        }
+        char body[128];
+        if (result == FLEX1500_STATION_OWNER_OK) {
+            snprintf(body, sizeof(body), "{\"owner\":%s,\"lease\":%llu}\n",
+                     owner_release ? "false" : "true", (unsigned long long)lease);
+            *response_length = json_response(owner_acquire ? "201 Created" : "200 OK", body, response, capacity);
+        } else {
+            snprintf(body, sizeof(body), "{\"error\":\"owner_%s\"}\n",
+                     result == FLEX1500_STATION_OWNER_BUSY ? "busy" : "stale");
+            *response_length = json_response(result == FLEX1500_STATION_OWNER_BUSY ? "409 Conflict" : "410 Gone", body, response, capacity);
+        }
+        return FLEX1500_API_RESPONSE;
+    }
     const bool tx_keepalive = request_is(request, "PUT", "/v1/tx/sessions/keepalive");
     const bool tx_stream = request_is(request, "CONNECT", "/v1/tx/stream");
     const bool tx_audio = request_is(request, "POST", "/v1/tx/audio");
@@ -280,6 +335,17 @@ flex1500_api_action flex1500_api_dispatch(
         strncmp(request, "PUT /v1/tx/", 11) == 0 ||
         strncmp(request, "CONNECT /v1/tx/", 15) == 0 ||
         strncmp(request, "DELETE /v1/tx/", 14) == 0;
+
+    const bool station_controlled = tx_general_path || tune_path ||
+        frequency_path || mode_path || gain_path || bandwidth_path ||
+        tx_drive_path || tx_mic_gain_path || tx_timeout_path ||
+        tx_compressor_path;
+    if (station_controlled && !station_request_authorized(controller, request)) {
+        *response_length = json_response(
+            "409 Conflict", "{\"error\":\"station_owned\"}\n",
+            response, capacity);
+        return FLEX1500_API_RESPONSE;
+    }
 
     if (tx_general_path) {
         if (controller->network_tx == NULL || !controller->network_tx->enabled) {

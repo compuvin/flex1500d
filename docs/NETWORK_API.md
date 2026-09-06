@@ -131,6 +131,22 @@ interface.
 
 ## Receive-frequency control
 
+In transmit-enabled mode, hardware-changing routes require the persistent
+station-control lease returned by `POST /v1/control/owner`. Present it as
+`X-Flex1500-Control-Lease` and renew it at
+`PUT /v1/control/owner/keepalive`. The first requesting station owns hardware
+frequency, mode, gain, TX settings, Tune, and general TX until explicit release,
+disconnect/lease expiry, or daemon recovery. `DELETE /v1/control/owner` is
+rejected while a transmitter operation is active. A foreign or missing lease
+gets `409 station_owned` and cannot alter hardware or transmit.
+
+The daemon broadcasts IQ to as many as four consumers. A non-owner implements
+its own tuning and demodulation inside the owner's 48 kHz IQ window; it does not
+send a hardware frequency request. The browser test page and SoapySDR adapter
+implement this as center plus/minus 24 kHz local tuning. Physical microphone
+PTT is the local-priority exception: it uses the current owner's station
+configuration and does not revoke that station lease.
+
 RX tuning is unavailable in the offline server and in the existing
 initialization-only live command. Those modes return 404 for the control path.
 A separately armed receive-only daemon mode enables:
@@ -152,9 +168,8 @@ stopping audio. A small amount of already-buffered pre-tune audio may still be
 heard during the transition. SoapySDR clients may continue to reconnect after
 a frequency change to reset their own stream state.
 
-The reconnect path atomically replaces the previous single IQ socket. This
-avoids a race where a fast SoapySDR reconnect arrived before the daemon had
-observed the old socket closing and received a truncated HTTP response. A live
+Each IQ consumer has an independent socket. A stalled or disconnected consumer
+is removed without interrupting the others. A live
 test retuned an active Soapy stream through 7.1, 14.2, 21.25, and 28.475 MHz,
 then restored 10 MHz, with valid samples after every change and no USB packet
 or radio-command errors.

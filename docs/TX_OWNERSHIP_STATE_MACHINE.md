@@ -2,8 +2,10 @@
 
 # Exclusive transmitter ownership state machine
 
-This engineering design implements one keyed-transmitter owner at a time. TX
-ownership is separate from client connection and radio-control authority. It is
+This engineering design implements persistent station control plus one active
+transmitter operation at a time. The station lease covers radio-control
+authority and eligibility to request TX; subordinate Tune/general-TX leases
+correlate individual operations. It is
 not a README project goal and does not by itself enable physical microphone TX.
 
 ## Owners and local priority
@@ -36,9 +38,15 @@ samples.
 
 ## Controlling-client contract
 
-There is exactly one transmitter owner, even when several clients remain
-connected for receive or radio control. Ownership is scoped to a particular TX
-operation and is represented as follows:
+There is exactly one network station owner. The first TX-capable browser or
+SoapySDR station to connect acquires it and renews it every five seconds. It
+persists across PTT stop and TX stream deactivation until explicit release,
+client disconnect/15-second expiry, daemon recovery, or shutdown. Non-owners
+are receive-only: they cannot change hardware frequency, mode, gain or TX
+settings and cannot request Tune or general TX. They may independently tune and
+demodulate within the owner's 48 kHz IQ window without a radio write.
+
+Within that station lease, individual TX operations are represented as follows:
 
 - Physical microphone PTT owns TX from its accepted press edge through its
   release edge. It has no network lease and does not disconnect or revoke the
@@ -51,10 +59,10 @@ operation and is represented as follows:
   request must present that token. Because HTTP requests are not necessarily a
   persistent connection, loss is defined by a short, non-disableable lease
   timeout rather than by one TCP socket closing.
-- SoapySDR TX uses an HTTP raw-I/Q lease bound to one activated TX stream instance.
-  Deactivating or closing that stream, destroying the device, losing its
-  transport connection, or exceeding a bounded stream-data timeout must unkey
-  and release ownership.
+- SoapySDR TX uses an HTTP raw-I/Q lease bound to one activated TX stream
+  instance. Deactivating or closing that stream releases the TX operation but
+  not station control. Destroying the device releases station control after TX
+  cleanup; losing transport or exceeding a stream-data timeout unkeys safely.
 
 An HTTP token or Soapy stream belonging to a non-owner is rejected and cannot
 stop, renew, or feed another owner's transmission. Failed acquisition does not

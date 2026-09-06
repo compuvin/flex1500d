@@ -16,10 +16,29 @@
 
 int main(int argc, char **argv)
 {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
     const std::string port = argv[1];
     const SoapySDR::Kwargs args{{"driver", "flex1500"},
                                 {"host", "127.0.0.1"}, {"port", port}};
+    if (argc == 3) {
+        SoapySDR::Device *listener = SoapySDR::Device::make(args);
+        CHECK(listener != nullptr);
+        CHECK(listener->getNumChannels(SOAPY_SDR_RX) == 1);
+        CHECK(listener->getNumChannels(SOAPY_SDR_TX) == 0);
+        CHECK(listener->getHardwareInfo().at("station_owner") == "false");
+        listener->setFrequency(SOAPY_SDR_RX, 0, 7001000.0);
+        CHECK(listener->getFrequency(SOAPY_SDR_RX, 0) == 7001000.0);
+        bool rejected = false;
+        try {
+            listener->setFrequency(SOAPY_SDR_RX, 0, 7030000.0);
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+        CHECK(rejected);
+        SoapySDR::Device::unmake(listener);
+        return EXIT_SUCCESS;
+    }
+
     const auto devices = SoapySDR::Device::enumerate(args);
     CHECK(devices.size() == 1);
 
@@ -29,6 +48,7 @@ int main(int argc, char **argv)
     CHECK(device->getNumChannels(SOAPY_SDR_RX) == 1);
     CHECK(device->getNumChannels(SOAPY_SDR_TX) == 1);
     CHECK(device->getHardwareInfo().at("daemon_transmit_enabled") == "true");
+    CHECK(device->getHardwareInfo().at("station_owner") == "true");
     CHECK(device->getSampleRate(SOAPY_SDR_RX, 0) == 48000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_RX, 0).front().minimum() == 100000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_RX, 0).back().maximum() == 54000000.0);
@@ -46,6 +66,10 @@ int main(int argc, char **argv)
     CHECK(device->getBandwidth(SOAPY_SDR_RX, 0) == 2400.0);
     device->writeSetting("squelch_db", "-60");
     CHECK(device->readSetting("squelch_db") == "-60");
+
+    const std::string listenerCommand = std::string(argv[0]) + " " + port +
+        " listener";
+    CHECK(std::system(listenerCommand.c_str()) == 0);
 
     SoapySDR::Stream *stream = device->setupStream(
         SOAPY_SDR_RX, SOAPY_SDR_CF32);

@@ -282,24 +282,24 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
     return EXIT_SUCCESS;
 }
 
-static flex1500_publish_result write_socket(void *context,
-                                            const uint8_t *bytes,
-                                            size_t length, size_t *written)
+enum { MAX_IQ_CLIENTS = 4 };
+typedef struct iq_clients { int fd[MAX_IQ_CLIENTS]; } iq_clients;
+
+static flex1500_publish_result write_iq_clients(
+    void *context, const uint8_t *bytes, size_t length, size_t *written)
 {
-    int socket_fd = *(int *)context;
-    ssize_t result = send(socket_fd, bytes, length, MSG_NOSIGNAL);
-    if (result > 0) {
-        *written = (size_t)result;
-        return FLEX1500_PUBLISH_OK;
+    iq_clients *clients = context;
+    bool any = false;
+    for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i) {
+        if (clients->fd[i] < 0) continue;
+        ssize_t result = send(clients->fd[i], bytes, length,
+                              MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (result == (ssize_t)length) { any = true; continue; }
+        close(clients->fd[i]);
+        clients->fd[i] = -1;
     }
-    *written = 0;
-    if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return FLEX1500_PUBLISH_WOULD_BLOCK;
-    }
-    if (result == 0 || errno == EPIPE || errno == ECONNRESET) {
-        return FLEX1500_PUBLISH_DISCONNECTED;
-    }
-    return FLEX1500_PUBLISH_ERROR;
+    *written = any ? length : 0;
+    return any ? FLEX1500_PUBLISH_OK : FLEX1500_PUBLISH_DISCONNECTED;
 }
 
 static int api_tune_rx(void *context, uint32_t frequency_hz,
@@ -615,7 +615,7 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
            transmit_enabled ? "enabled" : "disabled",
            transmit_enabled ? " (LAN-accessible; unauthenticated)" : "");
     fflush(stdout);
-    int iq_client = -1;
+    iq_clients iq = {.fd = {-1, -1, -1, -1}};
     int tx_client = -1;
     http_client_state http_client = {.fd = -1};
     flex1500_api_controller api;
@@ -641,12 +641,16 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
     tx_context.tune_control = &tune_control;
     flex1500_network_tx network_tx;
     flex1500_network_tx_init(&network_tx, transmit_enabled, &tx_control);
+    flex1500_station_owner station_owner;
+    flex1500_station_owner_init(&station_owner);
     tx_context.network_tx = &network_tx;
     if (transmit_enabled) {
         api.tune_control = &tune_control;
         api.next_tune_lease = initial_tune_lease();
         api.next_tx_lease = initial_tune_lease();
         api.network_tx = &network_tx;
+        api.station_owner = &station_owner;
+        api.next_station_lease = initial_tune_lease();
     }
     api.radio_context = receiver;
     api.tune_rx = api_tune_rx;
@@ -659,6 +663,15 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
     bool observed_microphone_ptt = false;
 
     while (!server_stop_requested) {
+        if (flex1500_station_owner_tick(&station_owner, monotonic_ms()) ==
+            FLEX1500_STATION_OWNER_EXPIRED) {
+            flex1500_tune_control_shutdown(&tune_control);
+            if (network_tx.reserved)
+                (void)flex1500_network_tx_release(&network_tx,
+                                                   network_tx.lease);
+            printf("[owner] station-control lease expired; controls released\n");
+            fflush(stdout);
+        }
         flex1500_tune_result tune_tick = flex1500_tune_control_tick(
             &tune_control, monotonic_ms());
         if (tune_tick == FLEX1500_TUNE_EXPIRED ||
@@ -715,11 +728,11 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
             char failure[160];
             snprintf(failure, sizeof(failure), "%s",
                      flex1500_usb_rx_last_error(receiver));
-            if (iq_client >= 0) {
-                close(iq_client);
-                iq_client = -1;
-                flex1500_iq_publisher_disconnect(&publisher);
+            for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i) {
+                if (iq.fd[i] >= 0) close(iq.fd[i]);
+                iq.fd[i] = -1;
             }
+            flex1500_iq_publisher_disconnect(&publisher);
             if (tx_client >= 0) {
                 close(tx_client);
                 tx_client = -1;
@@ -940,17 +953,21 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                     "Content-Type: application/octet-stream\r\n"
                     "Connection: close\r\n"
                     "Cache-Control: no-store\r\n\r\n";
-                if (iq_client >= 0) {
-                    close(iq_client);
-                    iq_client = -1;
-                    flex1500_iq_publisher_disconnect(&publisher);
-                    printf("[stream] previous IQ client replaced\n");
-                }
-                if (send_all(http_client.fd, stream_header,
-                             sizeof(stream_header) - 1) == 0) {
-                    iq_client = http_client.fd;
+                size_t slot = MAX_IQ_CLIENTS;
+                for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
+                    if (iq.fd[i] < 0) { slot = i; break; }
+                if (slot == MAX_IQ_CLIENTS) {
+                    static const char full[] =
+                        "HTTP/1.1 503 Service Unavailable\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Content-Length: 28\r\nConnection: close\r\n\r\n"
+                        "{\"error\":\"iq_clients_full\"}\n";
+                    (void)send_all(http_client.fd, full, sizeof(full) - 1);
+                } else if (send_all(http_client.fd, stream_header,
+                                    sizeof(stream_header) - 1) == 0) {
+                    iq.fd[slot] = http_client.fd;
                     http_client.fd = -1;
-                    printf("[stream] IQ client connected\n");
+                    printf("[stream] IQ client connected in slot %zu\n", slot);
                     fflush(stdout);
                 }
                 } else if (action == FLEX1500_API_OPEN_TX_STREAM) {
@@ -1052,17 +1069,18 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
             }
         }
 
-        if (iq_client >= 0) {
+        bool have_iq_client = false;
+        for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
+            have_iq_client = have_iq_client || iq.fd[i] >= 0;
+        if (have_iq_client) {
             for (;;) {
                 flex1500_publish_result publish_result =
-                    flex1500_iq_publisher_pump(&publisher, write_socket,
-                                               &iq_client);
+                    flex1500_iq_publisher_pump(&publisher, write_iq_clients,
+                                               &iq);
                 if (publish_result == FLEX1500_PUBLISH_EMPTY ||
                     publish_result == FLEX1500_PUBLISH_WOULD_BLOCK) break;
                 if (publish_result == FLEX1500_PUBLISH_DISCONNECTED ||
                     publish_result == FLEX1500_PUBLISH_ERROR) {
-                    close(iq_client);
-                    iq_client = -1;
                     flex1500_iq_publisher_disconnect(&publisher);
                     printf("[stream] IQ client disconnected\n");
                     fflush(stdout);
@@ -1072,7 +1090,8 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
         }
     }
 
-    if (iq_client >= 0) close(iq_client);
+    for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
+        if (iq.fd[i] >= 0) close(iq.fd[i]);
     if (tx_client >= 0) close(tx_client);
     if (http_client.fd >= 0) close(http_client.fd);
     if (!server_stop_requested) {

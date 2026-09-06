@@ -44,7 +44,7 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
   applications and add other adapters where they provide useful coverage.
 - [x] Add normal receiver controls such as adjustable filter bandwidth, gain,
   squelch, and improved audio/DSP behavior.
-- [ ] Support more than one useful client or consumer without interrupting the
+- [x] Support more than one useful client or consumer without interrupting the
   receive stream.
 - [ ] Continue documenting the reverse-engineered FLEX-1500 protocol so other
   amateur-radio operators and developers can reproduce and improve the work.
@@ -297,6 +297,9 @@ The current API is HTTP version 1 on TCP port 15000:
 | `GET /v1/status` | Daemon, USB, buffer, and network counters |
 | `GET /v1/radio` | Radio identity, RX state, mode, and Tune capability/state |
 | `GET /v1/stream/iq` | Versioned 48 kHz complex-float IQ stream |
+| `POST /v1/control/owner` | Acquire persistent station control; first TX-capable client wins |
+| `PUT /v1/control/owner/keepalive` | Renew station control using its control-lease header |
+| `DELETE /v1/control/owner` | Relinquish station control while no transmitter is active |
 | `PUT /v1/radio/frequency/HZ` | Tune RX and select its hardware filter |
 | `PUT /v1/radio/mode/MODE` | Record host DSP mode: AM/FM/USB/LSB/CW |
 | `PUT /v1/radio/gain/DB` | Set receive gain: -10/0/10/20/30 dB |
@@ -312,6 +315,14 @@ The current API is HTTP version 1 on TCP port 15000:
 | `PUT /v1/tx/ptt/start|stop` | Key or unkey the leased, prebuffered network TX session |
 | `DELETE /v1/tx/sessions/current` | Unkey and release the network TX lease |
 | `GET /test` | Opt-in development page when explicitly enabled |
+
+In transmit-enabled mode, the first TX-capable browser or SoapySDR station to
+connect owns hardware tuning, radio settings, Tune, and network TX until it
+disconnects, explicitly releases control, or stops renewing its 15-second
+lease. Other clients remain receive-only and can select frequencies within the
+owner's 48 kHz IQ window without retuning the radio. Physical microphone PTT
+remains the reviewed local-priority exception and acts through the current
+station configuration without revoking the network station owner.
 
 Frequency control is available only with the exact tuning-enabled daemon
 command. Mode selection is host-side state and does not send a mode command to

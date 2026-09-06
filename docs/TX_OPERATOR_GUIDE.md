@@ -64,8 +64,14 @@ radio but produced no measurable RF output. Use the browser or HTTP Tune route
 for the validated capture-matched 5 W carrier. The initial Soapy key may also
 be delayed while the daemon fills its required 24,000-frame prebuffer.
 
-Only one TX owner may be active. Physical microphone PTT, Tune, HTTP, and
-SoapySDR TX share the same ownership state machine. Unsafe setting
+The first TX-capable browser or SoapySDR station to connect retains persistent
+station control across individual transmissions. All other network clients are
+receive-only, cannot retune hardware, and can listen only within the owner's
+48 kHz IQ window. Physical microphone PTT is the local-priority exception and
+uses the current station configuration without revoking that network owner.
+
+Only one TX operation may be active. Physical microphone PTT, Tune, HTTP, and
+SoapySDR TX share the same transmitter state machine. Unsafe setting
 changes are rejected while keyed and are never silently staged; unkey, change
 the setting, and key again.
 

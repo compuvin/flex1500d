@@ -37,6 +37,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     ptt_stops = 0
     releases = 0
     stream_closed = threading.Event()
+    owner_held = False
+    owner_lock = threading.Lock()
+
+    def tx_headers_valid(self) -> bool:
+        return (self.headers.get("X-Flex1500-Control-Lease") == "31337" and
+                self.headers.get("X-Flex1500-TX-Lease") == "424242")
 
     def send_body(self, status: int, body: bytes,
                   content_type: str = "application/json") -> None:
@@ -73,20 +79,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/v1/radio/tx-drive/75":
             self.send_body(200, b'{"tx_drive_percent":75}\n')
         elif self.path == "/v1/tx/ptt/start":
+            if not self.tx_headers_valid():
+                self.send_body(409, b'{"error":"station_owned"}\n')
+                return
             Handler.ptt_starts += 1
             self.send_body(200, b'{"state":"transmitting"}\n')
         elif self.path == "/v1/tx/ptt/stop":
+            if not self.tx_headers_valid():
+                self.send_body(409, b'{"error":"station_owned"}\n')
+                return
             Handler.ptt_stops += 1
             self.send_body(200, b'{"state":"reserved"}\n')
         elif self.path == "/v1/tx/sessions/keepalive":
+            if not self.tx_headers_valid():
+                self.send_body(409, b'{"error":"station_owned"}\n')
+                return
             self.send_body(200, b'{"state":"reserved"}\n')
+        elif self.path == "/v1/control/owner/keepalive":
+            with Handler.owner_lock:
+                held = Handler.owner_held
+            self.send_body(200 if held else 410,
+                           b'{"owner":true,"lease":31337}\n' if held else
+                           b'{"error":"owner_stale"}\n')
         else:
             self.send_body(404, b'{"error":"not found"}\n')
 
     def do_POST(self) -> None:  # noqa: N802 - HTTP handler API
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
-        if self.path == "/v1/tx/sessions" and b'"source":"iq"' in body:
+        if self.path == "/v1/control/owner":
+            with Handler.owner_lock:
+                if Handler.owner_held:
+                    acquired = False
+                else:
+                    Handler.owner_held = True
+                    acquired = True
+            self.send_body(201 if acquired else 409,
+                           b'{"owner":true,"lease":31337}\n' if acquired else
+                           b'{"error":"owner_busy"}\n')
+        elif self.path == "/v1/tx/sessions" and b'"source":"iq"' in body:
+            if self.headers.get("X-Flex1500-Control-Lease") != "31337":
+                self.send_body(409, b'{"error":"station_owned"}\n')
+                return
             Handler.session_count += 1
             self.send_body(201, b'{"lease":424242,"state":"reserved"}\n')
         else:
@@ -95,6 +129,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_CONNECT(self) -> None:  # noqa: N802 - HTTP handler API
         if self.path != "/v1/tx/stream":
             self.send_body(404, b'{"error":"not found"}\n')
+            return
+        if not self.tx_headers_valid():
+            self.send_body(409, b'{"error":"station_owned"}\n')
             return
         self.send_response(200, "Connection Established")
         self.send_header("Content-Type", "application/octet-stream")
@@ -111,8 +148,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802 - HTTP handler API
         if self.path == "/v1/tx/sessions/current":
+            if not self.tx_headers_valid():
+                self.send_body(409, b'{"error":"station_owned"}\n')
+                return
             Handler.releases += 1
             self.send_body(200, b'{"state":"idle"}\n')
+        elif self.path == "/v1/control/owner":
+            with Handler.owner_lock:
+                Handler.owner_held = False
+            self.send_body(200, b'{"owner":false,"lease":31337}\n')
         else:
             self.send_body(404, b'{"error":"not found"}\n')
 

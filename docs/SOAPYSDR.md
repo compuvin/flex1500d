@@ -12,11 +12,11 @@ FLEX-1500 -> flex1500d -> HTTP/F15I API -> flex1500Support -> SDR application
 ## Current contract
 
 - driver name: `flex1500`
-- one RX channel, plus one TX channel when the daemon is transmit-enabled
+- one RX channel; a TX channel only when this client owns station control
 - fixed 48,000 complex samples per second
 - native `CF32` samples, with `CS16` also available
 - center frequency from 100 kHz through 54 MHz
-- one stream, matching the daemon's current one-client limit
+- up to four independent daemon IQ consumers
 - daemon host defaults to `127.0.0.1`, port defaults to `15000`
 
 For a remote trusted-LAN daemon, supply its hostname or address without changing
@@ -39,12 +39,20 @@ conventions; without that conversion, USB and LSB appear reversed. The native
 API bytes are intentionally unchanged.
 
 The adapter can attach to either RX-only or explicitly TX-enabled daemon mode.
-It reports zero TX channels against an RX-only daemon. Against a TX-enabled
-daemon it reports one `CF32`/`CS16`, 48 ksample/s TX channel and maps it to the
-daemon's leased raw-I/Q API. Stream activation reserves the shared HTTP owner
-and connects its sample tunnel. After the required 24,000-frame prebuffer,
-continuous writes key the transmitter. Deactivation or destruction stops PTT,
-releases the lease, and closes the stream. Periodic writes renew the lease;
+In TX-enabled mode, the first TX-capable station to connect acquires a
+persistent station-control lease and renews it in an independent background
+thread. It retains that lease across TX stream activation and deactivation;
+device destruction releases it. Other Soapy processes report zero TX channels
+and cannot change hardware settings. They may select a receive frequency only
+within the owner's current plus/minus 24 kHz IQ window; that shift is applied
+locally without retuning the radio.
+
+The owning client reports one `CF32`/`CS16`, 48 ksample/s TX channel and maps it
+to the daemon's leased raw-I/Q API. Stream activation reserves the subordinate
+TX operation and connects its sample tunnel. After the required 24,000-frame
+prebuffer, continuous writes key the transmitter. Deactivation stops PTT,
+releases that TX operation, and closes the stream without surrendering station
+control. Periodic writes renew the TX-operation lease;
 stalled or disconnected clients remain subject to the daemon's data watchdog,
 maximum-key timer, guaranteed-unkey cleanup, drive limiter, and ownership
 rules.
@@ -84,8 +92,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 The adapter test starts a loopback mock daemon and supplies synthetic `F15I`
-samples. It checks discovery, RX and conditional TX channel counts, frequency,
-gain, stream activation, decoded RX samples, leased TX lifecycle, I/Q
+samples. It checks discovery, first-client ownership, second-process
+receive-only behavior and local tuning bounds, conditional TX channel counts,
+frequency, gain, stream activation, decoded RX samples, leased TX lifecycle, I/Q
 orientation, PTT stop, and session release without USB access.
 
 ## Development-tree testing

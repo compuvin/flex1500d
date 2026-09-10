@@ -17,5 +17,6 @@ compile_commands.json
 /captures/*.wav
 /research/windows-binaries/*
 !/research/windows-binaries/README.md
+/research/local-reference/
 __pycache__/
 *.pyc

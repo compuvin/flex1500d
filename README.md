@@ -49,7 +49,8 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
   receive stream.
 - [ ] Continue documenting the reverse-engineered FLEX-1500 protocol so other
   amateur-radio operators and developers can reproduce and improve the work.
-  (See: [identified features not yet implemented](docs/UNIMPLEMENTED_FEATURES.md).)
+  (See: [identified radio features not yet implemented](docs/UNIMPLEMENTED_FEATURES.md)
+  and [PowerSDR software feature gaps](docs/POWERSDR_FEATURE_GAPS.md).)
 - [x] Keep transmit disabled in the current daemon and API while preserving
   the isolated experimental findings for future research.
 - [ ] Before considering any future daemon transmit support, thoroughly

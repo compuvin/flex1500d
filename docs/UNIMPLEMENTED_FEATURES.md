@@ -99,6 +99,7 @@ These are documented limitations rather than implementation tasks:
 
 ## Related documentation
 
+- [PowerSDR software feature gaps](POWERSDR_FEATURE_GAPS.md)
 - [Protocol findings](PROTOCOL_FINDINGS.md)
 - [Receiver controls research](RECEIVER_CONTROLS.md)
 - [PowerSDR startup/exit capture](PCAP_PROGRAM_START_STOP.md)

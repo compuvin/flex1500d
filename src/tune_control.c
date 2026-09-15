@@ -151,6 +151,21 @@ void flex1500_tune_control_record_audio_quality(
         dropped_microphone_frames;
 }
 
+void flex1500_tune_control_record_graceful_drain(
+    flex1500_tune_control *control, uint64_t peak_queued_frames,
+    uint64_t stop_requested_frames, uint64_t drained_frames,
+    uint64_t discarded_frames, uint64_t drain_ms)
+{
+    if (control == NULL) return;
+    if (peak_queued_frames > control->diagnostics.peak_queued_frames) {
+        control->diagnostics.peak_queued_frames = peak_queued_frames;
+    }
+    control->diagnostics.stop_requested_frames += stop_requested_frames;
+    control->diagnostics.graceful_drained_frames += drained_frames;
+    control->diagnostics.graceful_discarded_frames += discarded_frames;
+    control->diagnostics.graceful_drain_ms += drain_ms;
+}
+
 void flex1500_tune_control_record_cleanup_failure(
     flex1500_tune_control *control)
 {

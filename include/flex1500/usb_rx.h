@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+enum { FLEX1500_TX_GRACEFUL_DRAIN_MS = 1000 };
+
 typedef struct flex1500_usb_rx flex1500_usb_rx;
 
 typedef struct flex1500_usb_rx_counters {
@@ -86,6 +88,9 @@ int flex1500_usb_rx_microphone_tx_start(flex1500_usb_rx *receiver,
                                        float microphone_gain,
                                        bool compressor_enabled);
 int flex1500_usb_rx_microphone_tx_stop(flex1500_usb_rx *receiver);
+int flex1500_usb_rx_microphone_tx_stop_graceful(
+    flex1500_usb_rx *receiver, uint64_t maximum_drain_ms);
+size_t flex1500_usb_rx_tx_pending_frames(const flex1500_usb_rx *receiver);
 const flex1500_tx_audio_stats *flex1500_usb_rx_microphone_tx_stats(
     const flex1500_usb_rx *receiver);
 int flex1500_usb_rx_network_tx_start(flex1500_usb_rx *receiver,
@@ -96,6 +101,8 @@ int flex1500_usb_rx_network_tx_start(flex1500_usb_rx *receiver,
 size_t flex1500_usb_rx_network_tx_push(flex1500_usb_rx *receiver,
                                       const uint8_t *data, size_t bytes,
                                       bool raw_iq);
+size_t flex1500_usb_rx_network_tx_available(
+    const flex1500_usb_rx *receiver, bool raw_iq);
 
 typedef enum flex1500_tx_fault_stage {
     FLEX1500_TX_FAULT_NONE = 0,

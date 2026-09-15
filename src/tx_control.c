@@ -10,13 +10,15 @@ static bool valid_owner(flex1500_tx_owner owner)
            owner <= FLEX1500_TX_OWNER_SOAPY;
 }
 
-static flex1500_tx_control_result stop_owner(flex1500_tx_control *control)
+static flex1500_tx_control_result stop_owner(flex1500_tx_control *control,
+                                             bool graceful)
 {
     if (control->owner == FLEX1500_TX_OWNER_NONE) return FLEX1500_TX_CONTROL_OK;
     flex1500_tx_owner owner = control->owner;
     control->state = FLEX1500_TX_STATE_UNKEYING;
     int result = control->stop_callback != NULL
-        ? control->stop_callback(control->callback_context, owner) : -1;
+        ? control->stop_callback(control->callback_context, owner, graceful)
+        : -1;
     control->cleanup_failed = result != 0;
     control->owner = FLEX1500_TX_OWNER_NONE;
     control->started_ms = 0;
@@ -73,7 +75,8 @@ flex1500_tx_control_result flex1500_tx_control_request(
     if (control->start_callback == NULL ||
         control->start_callback(control->callback_context, owner) != 0) {
         int cleanup_result = control->stop_callback != NULL
-            ? control->stop_callback(control->callback_context, owner) : -1;
+            ? control->stop_callback(control->callback_context, owner, false)
+            : -1;
         control->cleanup_failed = cleanup_result != 0;
         control->state = FLEX1500_TX_STATE_FAULTED;
         return FLEX1500_TX_CONTROL_HARDWARE_ERROR;
@@ -90,7 +93,16 @@ flex1500_tx_control_result flex1500_tx_control_release(
     if (control == NULL || !control->enabled) return FLEX1500_TX_CONTROL_DISABLED;
     if (!valid_owner(owner)) return FLEX1500_TX_CONTROL_INVALID_OWNER;
     if (control->owner != owner) return FLEX1500_TX_CONTROL_BUSY;
-    return stop_owner(control);
+    return stop_owner(control, false);
+}
+
+flex1500_tx_control_result flex1500_tx_control_release_graceful(
+    flex1500_tx_control *control, flex1500_tx_owner owner)
+{
+    if (control == NULL || !control->enabled) return FLEX1500_TX_CONTROL_DISABLED;
+    if (!valid_owner(owner)) return FLEX1500_TX_CONTROL_INVALID_OWNER;
+    if (control->owner != owner) return FLEX1500_TX_CONTROL_BUSY;
+    return stop_owner(control, true);
 }
 
 flex1500_tx_control_result flex1500_tx_control_physical_ptt(
@@ -108,13 +120,13 @@ flex1500_tx_control_result flex1500_tx_control_physical_ptt(
     }
     if (!pressed) {
         if (control->owner == FLEX1500_TX_OWNER_PHYSICAL_MIC) {
-            return stop_owner(control);
+            return stop_owner(control, true);
         }
         return FLEX1500_TX_CONTROL_OK;
     }
     if (control->owner != FLEX1500_TX_OWNER_NONE &&
         control->owner != FLEX1500_TX_OWNER_PHYSICAL_MIC) {
-        flex1500_tx_control_result stopped = stop_owner(control);
+        flex1500_tx_control_result stopped = stop_owner(control, false);
         if (stopped != FLEX1500_TX_CONTROL_OK) return stopped;
     }
     return flex1500_tx_control_request(control,
@@ -131,7 +143,7 @@ flex1500_tx_control_result flex1500_tx_control_tick(
     }
     if (control->maximum_key_ms != 0 &&
         now_ms - control->started_ms >= control->maximum_key_ms) {
-        flex1500_tx_control_result stopped = stop_owner(control);
+        flex1500_tx_control_result stopped = stop_owner(control, false);
         return stopped == FLEX1500_TX_CONTROL_OK ? FLEX1500_TX_CONTROL_MAX_KEY
                                                  : stopped;
     }
@@ -141,7 +153,7 @@ flex1500_tx_control_result flex1500_tx_control_tick(
 void flex1500_tx_control_shutdown(flex1500_tx_control *control)
 {
     if (control != NULL && control->owner != FLEX1500_TX_OWNER_NONE) {
-        (void)stop_owner(control);
+        (void)stop_owner(control, false);
     }
 }
 

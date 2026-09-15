@@ -138,8 +138,9 @@ transmit support.
   lease release with SDR Oxide at 28.475 MHz into a dummy load. SDR Oxide's
   Tune control uses ordinary raw I/Q rather than the dedicated 5 W Tune API;
   it keyed without measurable RF in the observed test.
-- [ ] Test interoperability with multiple SDR applications without allowing
-  competing transmit owners.
+- [x] Test interoperability with multiple SDR applications without allowing
+  competing transmit owners. (See the
+  [transmit operator guide](TX_OPERATOR_GUIDE.md).)
 
 ## Testing and release readiness
 

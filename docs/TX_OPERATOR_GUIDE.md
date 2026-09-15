@@ -62,7 +62,8 @@ An SDR application's Tune button is not the daemon's dedicated Tune API.
 During SDR Oxide validation it opened a normal raw-I/Q TX stream and keyed the
 radio but produced no measurable RF output. Use the browser or HTTP Tune route
 for the validated capture-matched 5 W carrier. The initial Soapy key may also
-be delayed while the daemon fills its required 24,000-frame prebuffer.
+be delayed while the daemon fills its 4,096-frame (approximately 85 ms)
+startup reserve.
 
 The first TX-capable browser or SoapySDR station to connect retains persistent
 station control across individual transmissions. All other network clients are
@@ -111,6 +112,30 @@ A clean daemon shutdown reports TX cleanup confirmation, PA filter 0, and the
 amplifier disabled. Review any `cleanup failed`, USB, command, or recovery
 message rather than assuming the radio is safe solely because the process
 ended.
+
+Normal PTT release uses a bounded graceful stop: no new audio is accepted, and
+up to one second is allowed for already queued DSP/USB frames to finish before
+unkey. This bound prevents a stale backlog from holding the transmitter keyed.
+All watchdog, disconnect, error, shutdown, preemption, and emergency paths
+continue to unkey immediately. The daemon logs pending, drained, discarded,
+and elapsed values for each graceful stop.
+
+### Live graceful-stop validation — 2026-09-14
+
+KB1JDX live-tested normal PTT release through the browser HTTP microphone,
+SDR Oxide through SoapySDR, and the physical microphone. The browser and Soapy
+tests transmitted speech that began before the relay click and preserved the
+queued ending after Stop was pressed. The physical microphone also keyed,
+carried intelligible audio, drained, and returned to receive normally.
+
+After all three paths were exercised, daemon `0.2.0` at development revision
+`80edebbc-dirty` reported 13 starts and 13 stops. A total of 375,763 frames
+present at normal Stop requests were all drained in 8,419 ms cumulatively, with
+zero graceful-discarded frames, zero dropped microphone frames, zero watchdog
+stops, and zero cleanup failures. The largest observed pending queue was 46,048
+frames, approximately 959 ms at 48 ksample/s. This validates the one-second
+normal-stop bound for the tested workload; it does not alter the immediate
+behavior of safety-driven stops.
 
 ## Emergency unkey
 

@@ -1,5 +1,64 @@
 # Release notes
 
+## v0.2.1 — transmit latency and graceful-stop maintenance release
+
+This experimental maintenance release improves live HTTP and SoapySDR
+transmission behavior while retaining the v0.2.0 ownership and safety model.
+It remains intended for technically experienced amateur-radio operators using
+independent frequency, power, modulation, and load monitoring.
+
+The project remains unaffiliated with, unendorsed by, and unsupported by
+FlexRadio Systems. API version 1 remains unauthenticated and unencrypted and
+must not be exposed to an untrusted network or the public internet.
+
+### Highlights
+
+- Reduced network-TX startup buffering from 24,000 to 4,096 frames
+  (approximately 85 ms) and added paced SoapySDR writes.
+- Added daemon-side TCP backpressure instead of silently dropping samples when
+  the TX DSP/USB queue is full.
+- Added a bounded normal PTT-stop drain for HTTP, SoapySDR, and the physical
+  microphone. Already accepted audio may finish for up to one second; safety,
+  watchdog, disconnect, preemption, error, and shutdown stops remain immediate.
+- Added live queue depth, estimated queue time, peak depth, stop-time pending,
+  drained, discarded, and drain-duration diagnostics to `GET /v1/status` and
+  daemon logs.
+- Added daemon and Soapy adapter version/revision reporting.
+- Documented the required development install/restart procedure so an SDR
+  application cannot silently continue testing a stale installed module.
+- Added browser microphone stop ordering that halts capture before its bounded
+  final upload and PTT-stop sequence.
+- Added PowerSDR and remaining FLEX-1500 feature-gap research documents.
+
+### Live validation
+
+After the current Soapy module was installed and SDR Oxide was fully restarted,
+KB1JDX observed responsive PTT and clean audio through SoapySDR. Browser HTTP
+microphone transmission was likewise responsive and clean. A combined test of
+browser HTTP, SDR Oxide/SoapySDR, and physical microphone PTT completed 13
+starts and 13 stops. All 375,763 frames pending at normal Stop requests drained,
+with zero graceful-discarded frames, zero dropped microphone frames, zero
+watchdog stops, and zero cleanup failures. The largest observed queue was
+46,048 frames, approximately 959 ms at 48 ksample/s.
+
+### Important limitations
+
+- General TX remains experimental. Perform initial tests into a suitable dummy
+  load and independently monitor every transmission.
+- The high-level `tx_underruns` counter currently includes harmless zero-I/Q
+  scheduler fills during muted intervals and does not by itself prove audible
+  underruns.
+- SoapySDR TX has been validated with SDR Oxide; other TX applications, timed
+  bursts, and `END_BURST` operation remain unvalidated.
+- The package does not install or start a systemd service.
+- Daemon-generated AM, FM, CW, and digital-mode TX are not implemented.
+
+### Package
+
+The release includes an experimental `amd64` Debian package built in Release
+mode. It installs the daemon, SoapySDR module, udev rule, README, release notes,
+and GPLv3 license. The package does not start the daemon or access the radio.
+
 ## v0.2.0 — experimental network SDR and transmit release
 
 This experimental release expands `flex1500d` from its initial receive-only

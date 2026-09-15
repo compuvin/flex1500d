@@ -38,6 +38,8 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         output, capacity,
         "{\n"
         "  \"service\": \"flex1500d\",\n"
+        "  \"software_version\": \"%s\",\n"
+        "  \"git_revision\": \"%s\",\n"
         "  \"api_version\": 1,\n"
         "  \"state\": \"%s\",\n"
         "  \"radio_open\": %s,\n"
@@ -91,6 +93,13 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         "  \"tx_clipped_frames\": %llu,\n"
         "  \"tx_limited_frames\": %llu,\n"
         "  \"tx_dropped_microphone_frames\": %llu,\n"
+        "  \"tx_queued_frames\": %llu,\n"
+        "  \"tx_queued_ms\": %llu,\n"
+        "  \"tx_peak_queued_frames\": %llu,\n"
+        "  \"tx_stop_requested_frames\": %llu,\n"
+        "  \"tx_graceful_drained_frames\": %llu,\n"
+        "  \"tx_graceful_discarded_frames\": %llu,\n"
+        "  \"tx_graceful_drain_ms\": %llu,\n"
         "  \"tx_audio_meter_valid\": %s,\n"
         "  \"tx_input_peak_dbfs\": %.1f,\n"
         "  \"tx_input_rms_dbfs\": %.1f,\n"
@@ -102,6 +111,8 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         "  \"tx_watchdog_stops\": %llu,\n"
         "  \"tx_cleanup_failures\": %llu\n"
         "}\n",
+        status->software_version != NULL ? status->software_version : "unknown",
+        status->git_revision != NULL ? status->git_revision : "unknown",
         status->state, status->radio_open ? "true" : "false",
         status->network_listening ? "true" : "false", status->sample_rate,
         (unsigned long long)status->frames,
@@ -151,6 +162,13 @@ size_t flex1500_build_status_json(const flex1500_service_status *status,
         (unsigned long long)status->tx_clipped_frames,
         (unsigned long long)status->tx_limited_frames,
         (unsigned long long)status->tx_dropped_microphone_frames,
+        (unsigned long long)status->tx_queued_frames,
+        (unsigned long long)status->tx_queued_ms,
+        (unsigned long long)status->tx_peak_queued_frames,
+        (unsigned long long)status->tx_stop_requested_frames,
+        (unsigned long long)status->tx_graceful_drained_frames,
+        (unsigned long long)status->tx_graceful_discarded_frames,
+        (unsigned long long)status->tx_graceful_drain_ms,
         status->tx_audio_meter_valid ? "true" : "false",
         status->tx_input_peak_dbfs, status->tx_input_rms_dbfs,
         status->tx_post_gain_peak_dbfs, status->tx_post_gain_rms_dbfs,

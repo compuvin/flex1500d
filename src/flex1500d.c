@@ -99,6 +99,8 @@ static void print_usage(const char *program)
 static void print_idle_status(void)
 {
     flex1500_service_status status = {
+        .software_version = FLEX1500_SOFTWARE_VERSION,
+        .git_revision = FLEX1500_GIT_REVISION,
         .state = "offline",
         .radio_open = false,
         .network_listening = false,
@@ -168,13 +170,28 @@ static void log_tx_api_result(const char *request, const char *response,
     const char *status = response_length >= 12 ? response + 9 : "accepted";
     const bool success = response_length == 0 ||
         strncmp(status, "200", 3) == 0 || strncmp(status, "201", 3) == 0;
+    const char *reason = NULL;
+    if (!success) {
+        if (strstr(response, "\"error\":\"tx_not_ready\"") != NULL)
+            reason = "prebuffer-not-ready";
+        else if (strstr(response, "\"error\":\"station_owned\"") != NULL)
+            reason = "station-owned";
+        else if (strstr(response, "\"error\":\"tx_busy\"") != NULL)
+            reason = "transmitter-busy";
+        else if (strstr(response, "\"error\":\"tx_stale\"") != NULL)
+            reason = "stale-lease";
+        else if (strstr(response, "\"error\":\"tx_invalid\"") != NULL)
+            reason = "invalid-request";
+    }
     /* Successful audio chunks arrive frequently; only log their failures. */
     if (strcmp(operation, "audio chunk") == 0 && success) return;
     fprintf(success ? stdout : stderr,
-            "[tx-api] %s -> %.3s; reserved=%s keyed=%s stream=%s\n",
+            "[tx-api] %s -> %.3s; reserved=%s keyed=%s stream=%s%s%s\n",
             operation, status, tx->reserved ? "yes" : "no",
             tx->keyed ? "yes" : "no",
-            tx->stream_connected ? "yes" : "no");
+            tx->stream_connected ? "yes" : "no",
+            reason != NULL ? "; reason=" : "",
+            reason != NULL ? reason : "");
     fflush(success ? stdout : stderr);
 }
 
@@ -236,6 +253,8 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
     fflush(stdout);
 
     flex1500_service_status status = {
+        .software_version = FLEX1500_SOFTWARE_VERSION,
+        .git_revision = FLEX1500_GIT_REVISION,
         .state = "offline_serving",
         .radio_open = false,
         .network_listening = true,
@@ -334,7 +353,17 @@ static flex1500_service_status live_service_status(
     const flex1500_tx_audio_stats *audio =
         flex1500_usb_rx_microphone_tx_stats(receiver);
     bool meter_valid = audio != NULL && audio->microphone_frames != 0;
+    uint64_t queued_frames = flex1500_usb_rx_tx_pending_frames(receiver);
+    uint64_t peak_queued_frames = tx != NULL ? tx->peak_queued_frames : 0;
+    if (audio != NULL && audio->peak_queued_frames > peak_queued_frames) {
+        peak_queued_frames = audio->peak_queued_frames;
+    }
+    if (queued_frames > peak_queued_frames) {
+        peak_queued_frames = queued_frames;
+    }
     return (flex1500_service_status){
+        .software_version = FLEX1500_SOFTWARE_VERSION,
+        .git_revision = FLEX1500_GIT_REVISION,
         .state = "receiving", .radio_open = true, .network_listening = true,
         .sample_rate = 48000, .frames = iq->frames,
         .sentinel_frames = iq->sentinel_frames, .usb_packets = usb->usb_packets,
@@ -383,6 +412,16 @@ static flex1500_service_status live_service_status(
         .tx_limited_frames = audio != NULL ? audio->limited_frames : 0,
         .tx_dropped_microphone_frames =
             tx != NULL ? tx->dropped_microphone_frames : 0,
+        .tx_queued_frames = queued_frames,
+        .tx_queued_ms = (queued_frames + 47) / 48,
+        .tx_peak_queued_frames = peak_queued_frames,
+        .tx_stop_requested_frames =
+            tx != NULL ? tx->stop_requested_frames : 0,
+        .tx_graceful_drained_frames =
+            tx != NULL ? tx->graceful_drained_frames : 0,
+        .tx_graceful_discarded_frames =
+            tx != NULL ? tx->graceful_discarded_frames : 0,
+        .tx_graceful_drain_ms = tx != NULL ? tx->graceful_drain_ms : 0,
         .tx_audio_meter_valid = meter_valid,
         .tx_input_peak_dbfs = meter_valid
             ? meter_dbfs(audio->input_peak) : -120.0f,
@@ -508,7 +547,8 @@ static int daemon_tx_owner_start(void *context, flex1500_tx_owner owner)
     return result;
 }
 
-static int daemon_tx_owner_stop(void *context, flex1500_tx_owner owner)
+static int daemon_tx_owner_stop(void *context, flex1500_tx_owner owner,
+                                bool graceful)
 {
     daemon_tx_context *tx = context;
     if (owner == FLEX1500_TX_OWNER_TUNE) {
@@ -516,18 +556,42 @@ static int daemon_tx_owner_stop(void *context, flex1500_tx_owner owner)
     }
     if (owner != FLEX1500_TX_OWNER_PHYSICAL_MIC &&
         owner != FLEX1500_TX_OWNER_HTTP) return -1;
+    int result = graceful
+        ? flex1500_usb_rx_microphone_tx_stop_graceful(
+              tx->receiver, FLEX1500_TX_GRACEFUL_DRAIN_MS)
+        : flex1500_usb_rx_microphone_tx_stop(tx->receiver);
     const flex1500_tx_audio_stats *stats =
         flex1500_usb_rx_microphone_tx_stats(tx->receiver);
     uint64_t underruns = stats != NULL ? stats->underrun_frames : 0;
     uint64_t clipped = stats != NULL ? stats->clipped_frames : 0;
     uint64_t dropped = stats != NULL
         ? stats->dropped_microphone_frames : 0;
-    int result = flex1500_usb_rx_microphone_tx_stop(tx->receiver);
     if (tx->tune_control != NULL) {
         ++tx->tune_control->diagnostics.stops;
         flex1500_tune_control_record_underrun(tx->tune_control, underruns);
         flex1500_tune_control_record_audio_quality(
             tx->tune_control, clipped, dropped);
+        if (stats != NULL) {
+            uint64_t peak = stats->peak_queued_frames;
+            if (stats->stop_requested_frames > peak) {
+                peak = stats->stop_requested_frames;
+            }
+            flex1500_tune_control_record_graceful_drain(
+                tx->tune_control, peak, stats->stop_requested_frames,
+                stats->graceful_drained_frames,
+                stats->graceful_discarded_frames,
+                stats->graceful_drain_ms);
+            if (graceful) {
+                printf("[tx] graceful stop: pending=%llu frames (%.1f ms), "
+                       "drained=%llu, discarded=%llu, elapsed=%llu ms\n",
+                       (unsigned long long)stats->stop_requested_frames,
+                       (double)stats->stop_requested_frames / 48.0,
+                       (unsigned long long)stats->graceful_drained_frames,
+                       (unsigned long long)stats->graceful_discarded_frames,
+                       (unsigned long long)stats->graceful_drain_ms);
+                fflush(stdout);
+            }
+        }
     }
     return result;
 }
@@ -981,7 +1045,10 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                                  sizeof(tx_header) - 1) == 0) {
                         tx_client = http_client.fd;
                         http_client.fd = -1;
-                        printf("[tx] HTTP sample stream connected\n");
+                        printf("[tx] network %s connection established\n",
+                               network_tx.profile.source ==
+                                       FLEX1500_NETWORK_TX_IQ
+                                   ? "raw-IQ" : "PCM-audio");
                     }
                 } else if (action == FLEX1500_API_PUSH_TX_AUDIO) {
                     const char *body = strstr(http_client.request, "\r\n\r\n");
@@ -1029,14 +1096,28 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
 
         if (tx_client >= 0) {
             uint8_t data[8192 + 4];
+            bool raw_iq = network_tx.profile.source == FLEX1500_NETWORK_TX_IQ;
+            size_t frame_bytes = raw_iq ? 4 : 2;
+            size_t available_frames = network_tx.keyed
+                ? flex1500_usb_rx_network_tx_available(receiver, raw_iq)
+                : (network_tx.buffered_frames <
+                       FLEX1500_NETWORK_TX_MIN_PREBUFFER_FRAMES
+                    ? FLEX1500_NETWORK_TX_MIN_PREBUFFER_FRAMES -
+                          network_tx.buffered_frames
+                    : 0);
+            size_t receive_limit = available_frames * frame_bytes;
+            receive_limit = receive_limit > tx_context.network_tail_bytes
+                ? receive_limit - tx_context.network_tail_bytes : 0;
+            if (receive_limit > sizeof(data) - tx_context.network_tail_bytes) {
+                receive_limit = sizeof(data) - tx_context.network_tail_bytes;
+            }
             memcpy(data, tx_context.network_tail,
                    tx_context.network_tail_bytes);
-            ssize_t received = recv(tx_client,
-                data + tx_context.network_tail_bytes,
-                sizeof(data) - tx_context.network_tail_bytes, 0);
+            ssize_t received = receive_limit != 0
+                ? recv(tx_client, data + tx_context.network_tail_bytes,
+                       receive_limit, 0)
+                : -1;
             if (received > 0) {
-                bool raw_iq = network_tx.profile.source == FLEX1500_NETWORK_TX_IQ;
-                size_t frame_bytes = raw_iq ? 4 : 2;
                 size_t total = (size_t)received + tx_context.network_tail_bytes;
                 size_t bytes = total - total % frame_bytes;
                 tx_context.network_tail_bytes = total - bytes;
@@ -1058,14 +1139,17 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                 (void)flex1500_network_tx_record_data(
                     &network_tx, network_tx.lease, bytes / frame_bytes,
                     monotonic_ms());
-            } else if (received == 0 ||
-                       (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            } else if (receive_limit != 0 && (received == 0 ||
+                       (received < 0 && errno != EAGAIN &&
+                        errno != EWOULDBLOCK))) {
                 close(tx_client);
                 tx_client = -1;
                 (void)flex1500_network_tx_disconnect_stream(&network_tx);
                 tx_context.network_prebuffer_bytes = 0;
                 tx_context.network_tail_bytes = 0;
-                printf("[tx] HTTP sample stream disconnected; unkey requested\n");
+                printf("[tx] network %s connection closed; unkey requested\n",
+                       network_tx.profile.source == FLEX1500_NETWORK_TX_IQ
+                           ? "raw-IQ" : "PCM-audio");
             }
         }
 
@@ -1116,6 +1200,9 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
         flex1500_tune_control_diagnostics(&tune_control);
     printf("[tx] diagnostics: starts=%llu stops=%llu underruns=%llu "
            "clipped_frames=%llu dropped_microphone_frames=%llu "
+           "peak_queued_frames=%llu stop_requested_frames=%llu "
+           "graceful_drained_frames=%llu graceful_discarded_frames=%llu "
+           "graceful_drain_ms=%llu "
            "rejected_ownership=%llu watchdog_stops=%llu "
            "cleanup_failures=%llu\n",
            (unsigned long long)tx_diagnostics->starts,
@@ -1123,6 +1210,11 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
            (unsigned long long)tx_diagnostics->underruns,
            (unsigned long long)tx_diagnostics->clipped_frames,
            (unsigned long long)tx_diagnostics->dropped_microphone_frames,
+           (unsigned long long)tx_diagnostics->peak_queued_frames,
+           (unsigned long long)tx_diagnostics->stop_requested_frames,
+           (unsigned long long)tx_diagnostics->graceful_drained_frames,
+           (unsigned long long)tx_diagnostics->graceful_discarded_frames,
+           (unsigned long long)tx_diagnostics->graceful_drain_ms,
            (unsigned long long)tx_diagnostics->rejected_ownership_requests,
            (unsigned long long)tx_diagnostics->watchdog_stops,
            (unsigned long long)tx_diagnostics->cleanup_failures);

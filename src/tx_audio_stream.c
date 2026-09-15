@@ -80,6 +80,9 @@ size_t flex1500_tx_audio_stream_push_pcm16le(
         stream->microphone[stream->write_index] = normalized;
         stream->write_index = (stream->write_index + 1) % FLEX1500_TX_AUDIO_CAPACITY;
         ++stream->count; ++accepted;
+        if (stream->count > stream->stats.peak_queued_frames) {
+            stream->stats.peak_queued_frames = stream->count;
+        }
         float absolute = fabsf(normalized);
         if (absolute > stream->stats.input_peak) stream->stats.input_peak = absolute;
         stream->input_square_sum += (double)normalized * normalized;
@@ -121,6 +124,9 @@ size_t flex1500_tx_audio_stream_push_iq16le(
             (stream->write_index + 1) % FLEX1500_TX_AUDIO_CAPACITY;
         ++stream->count;
         ++accepted;
+        if (stream->count > stream->stats.peak_queued_frames) {
+            stream->stats.peak_queued_frames = stream->count;
+        }
     }
     stream->stats.microphone_frames += frames;
     if (stream->stats.microphone_frames != 0) {
@@ -206,6 +212,19 @@ size_t flex1500_tx_audio_stream_render_iq16le(
             stream->output_square_sum / stream->stats.output_frames);
     }
     return frames;
+}
+
+size_t flex1500_tx_audio_stream_available(
+    const flex1500_tx_audio_stream *stream)
+{
+    return stream != NULL && stream->count <= FLEX1500_TX_AUDIO_CAPACITY
+        ? FLEX1500_TX_AUDIO_CAPACITY - stream->count : 0;
+}
+
+size_t flex1500_tx_audio_stream_queued(
+    const flex1500_tx_audio_stream *stream)
+{
+    return stream != NULL ? stream->count : 0;
 }
 
 const flex1500_tx_audio_stats *flex1500_tx_audio_stream_stats(

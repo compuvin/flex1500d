@@ -49,6 +49,8 @@ int main(int argc, char **argv)
     CHECK(device->getNumChannels(SOAPY_SDR_TX) == 1);
     CHECK(device->getHardwareInfo().at("daemon_transmit_enabled") == "true");
     CHECK(device->getHardwareInfo().at("station_owner") == "true");
+    CHECK(!device->getHardwareInfo().at("adapter_version").empty());
+    CHECK(!device->getHardwareInfo().at("adapter_git_revision").empty());
     CHECK(device->getSampleRate(SOAPY_SDR_RX, 0) == 48000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_RX, 0).front().minimum() == 100000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_RX, 0).back().maximum() == 54000000.0);
@@ -121,12 +123,16 @@ int main(int argc, char **argv)
     stream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CF32);
     CHECK(stream != nullptr);
     CHECK(device->activateStream(stream) == 0);
-    std::vector<std::complex<float>> txSamples(25000, {0.25f, 0.5f});
-    const void *txBuffers[] = {txSamples.data()};
+    std::vector<std::complex<float>> txSamples(33000, {0.25f, 0.5f});
     flags = 0;
-    CHECK(device->writeStream(stream, txBuffers, txSamples.size(), flags,
-                              timeNs, 1000000) ==
-          static_cast<int>(txSamples.size()));
+    size_t txOffset = 0;
+    while (txOffset < txSamples.size()) {
+        const void *part[] = {txSamples.data() + txOffset};
+        const int written = device->writeStream(
+            stream, part, txSamples.size() - txOffset, flags, timeNs, 1000000);
+        CHECK(written > 0);
+        txOffset += static_cast<size_t>(written);
+    }
     CHECK(device->deactivateStream(stream) == 0);
     device->closeStream(stream);
     SoapySDR::Device::unmake(device);

@@ -83,8 +83,9 @@ established an unkeyed RX state and completed TX preparation. The FLEX-1500
 reports PTT changes rather than an initial released state, so waiting for a
 release event would incorrectly discard the first legitimate press.
 
-Button release immediately invokes unkey cleanup and relinquishes physical
-ownership. Every owner is subject to a non-disableable maximum-key duration:
+Button release stops accepting microphone samples and permits the bounded
+normal-stop drain before unkey cleanup relinquishes physical ownership. Every
+owner is subject to a non-disableable maximum-key duration:
 180 seconds by default, configurable from 30 through 1800 seconds through the
 API only while unkeyed. The setting survives automatic USB recovery.
 Shutdown invokes the active owner's stop callback. Competing non-physical

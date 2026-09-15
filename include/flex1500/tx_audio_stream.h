@@ -22,6 +22,11 @@ typedef struct flex1500_tx_audio_stats {
     uint64_t underrun_frames;
     uint64_t clipped_frames;
     uint64_t limited_frames;
+    uint64_t peak_queued_frames;
+    uint64_t stop_requested_frames;
+    uint64_t graceful_drained_frames;
+    uint64_t graceful_discarded_frames;
+    uint64_t graceful_drain_ms;
     float input_peak;
     float input_rms;
     float post_gain_peak;
@@ -66,6 +71,10 @@ void flex1500_tx_audio_stream_set_raw_iq(flex1500_tx_audio_stream *stream,
                                          bool enabled);
 size_t flex1500_tx_audio_stream_render_iq16le(
     flex1500_tx_audio_stream *stream, uint8_t *output, size_t frames);
+size_t flex1500_tx_audio_stream_available(
+    const flex1500_tx_audio_stream *stream);
+size_t flex1500_tx_audio_stream_queued(
+    const flex1500_tx_audio_stream *stream);
 const flex1500_tx_audio_stats *flex1500_tx_audio_stream_stats(
     const flex1500_tx_audio_stream *stream);
 

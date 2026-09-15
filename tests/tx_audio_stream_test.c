@@ -93,6 +93,12 @@ int main(void)
     }
     CHECK(flex1500_tx_audio_stream_stats(&empty)->underrun_frames == 96);
 
+    uint8_t queued_input[32] = {0};
+    CHECK(flex1500_tx_audio_stream_push_pcm16le(
+              &empty, queued_input, sizeof(queued_input)) == 16);
+    CHECK(flex1500_tx_audio_stream_queued(&empty) == 16);
+    CHECK(flex1500_tx_audio_stream_stats(&empty)->peak_queued_frames == 16);
+
     CHECK(!flex1500_tx_audio_stream_init(
         &empty, FLEX1500_TX_USB, 0, 1.0f));
     CHECK(!flex1500_tx_audio_stream_init(
@@ -142,6 +148,8 @@ int main(void)
     uint8_t raw_input[1024 * 4];
     CHECK(flex1500_tx_audio_stream_init(&raw, FLEX1500_TX_USB, 25, 1.0f));
     flex1500_tx_audio_stream_set_raw_iq(&raw, true);
+    CHECK(flex1500_tx_audio_stream_available(&raw) ==
+          FLEX1500_TX_AUDIO_CAPACITY);
     for (size_t frame = 0; frame < 1024; ++frame) {
         int16_t i = INT16_MAX, q = INT16_MAX;
         raw_input[frame * 4] = (uint8_t)i;
@@ -149,6 +157,10 @@ int main(void)
         raw_input[frame * 4 + 2] = (uint8_t)q;
         raw_input[frame * 4 + 3] = (uint8_t)((uint16_t)q >> 8);
     }
+    CHECK(flex1500_tx_audio_stream_push_iq16le(
+              &raw, raw_input, sizeof(raw_input)) == 1024);
+    CHECK(flex1500_tx_audio_stream_available(&raw) ==
+          FLEX1500_TX_AUDIO_CAPACITY - 1024);
     CHECK(flex1500_tx_audio_stream_push_iq16le(
         &raw, raw_input, sizeof(raw_input)) == 1024);
     CHECK(flex1500_tx_audio_stream_render_iq16le(

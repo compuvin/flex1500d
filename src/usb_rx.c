@@ -48,6 +48,7 @@ typedef struct tune_slot {
     struct libusb_transfer *transfer;
     uint8_t *buffer;
     bool submitted;
+    size_t audio_frames;
 } tune_slot;
 
 struct flex1500_usb_rx {
@@ -78,6 +79,7 @@ struct flex1500_usb_rx {
     bool tune_frequency_attempted;
     bool microphone_streaming;
     bool microphone_capture_enabled;
+    bool tx_accepting_audio;
     flex1500_tx_audio_stream microphone_stream;
     flex1500_tx_fault_stage tx_fault_stage;
     bool transmit_prepared;
@@ -211,7 +213,8 @@ static void process_packet(flex1500_usb_rx *receiver, const uint8_t *data,
                            unsigned int length)
 {
     if (receiver->microphone_streaming) {
-        if (receiver->microphone_capture_enabled) {
+        if (receiver->microphone_capture_enabled &&
+            receiver->tx_accepting_audio) {
             (void)flex1500_tx_audio_stream_push_iq16le(
                 &receiver->microphone_stream, data, length);
         }
@@ -370,6 +373,7 @@ static void tune_complete(struct libusb_transfer *transfer)
     tune_slot *slot = transfer->user_data;
     flex1500_usb_rx *receiver = slot->receiver;
     slot->submitted = false;
+    slot->audio_frames = 0;
     if (receiver->active_tune_transfers > 0) {
         --receiver->active_tune_transfers;
     }
@@ -382,9 +386,14 @@ static void tune_complete(struct libusb_transfer *transfer)
     }
     if (receiver->tune_streaming && receiver->running) {
         if (receiver->microphone_streaming) {
+            size_t before = flex1500_tx_audio_stream_queued(
+                &receiver->microphone_stream);
             (void)flex1500_tx_audio_stream_render_iq16le(
                 &receiver->microphone_stream, transfer->buffer,
                 (size_t)transfer->length / 4);
+            size_t after = flex1500_tx_audio_stream_queued(
+                &receiver->microphone_stream);
+            slot->audio_frames = before - after;
         }
         int result = libusb_submit_transfer(transfer);
         if (result == LIBUSB_SUCCESS) {
@@ -708,12 +717,14 @@ static void release_tune_stream(flex1500_usb_rx *receiver)
     receiver->active_tune_transfers = 0;
     receiver->microphone_streaming = false;
     receiver->microphone_capture_enabled = false;
+    receiver->tx_accepting_audio = false;
 }
 
 static int start_tune_stream(flex1500_usb_rx *receiver, bool microphone)
 {
     receiver->tune_streaming = true;
     receiver->microphone_streaming = microphone;
+    receiver->tx_accepting_audio = microphone;
     for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
         tune_slot *slot = &receiver->tune_slots[index];
         slot->receiver = receiver;
@@ -1092,6 +1103,7 @@ size_t flex1500_usb_rx_network_tx_push(flex1500_usb_rx *receiver,
                                       bool raw_iq)
 {
     if (receiver == NULL || !receiver->microphone_streaming ||
+        !receiver->tx_accepting_audio ||
         receiver->microphone_capture_enabled ||
         receiver->microphone_stream.raw_iq != raw_iq) return 0;
     return raw_iq
@@ -1101,8 +1113,61 @@ size_t flex1500_usb_rx_network_tx_push(flex1500_usb_rx *receiver,
                                                 data, bytes);
 }
 
+size_t flex1500_usb_rx_network_tx_available(
+    const flex1500_usb_rx *receiver, bool raw_iq)
+{
+    if (receiver == NULL || !receiver->microphone_streaming ||
+        !receiver->tx_accepting_audio ||
+        receiver->microphone_capture_enabled ||
+        receiver->microphone_stream.raw_iq != raw_iq) return 0;
+    return flex1500_tx_audio_stream_available(&receiver->microphone_stream);
+}
+
 int flex1500_usb_rx_microphone_tx_stop(flex1500_usb_rx *receiver)
 {
+    return flex1500_usb_rx_tune_carrier_stop(receiver);
+}
+
+size_t flex1500_usb_rx_tx_pending_frames(const flex1500_usb_rx *receiver)
+{
+    if (receiver == NULL || !receiver->microphone_streaming) return 0;
+    size_t pending = flex1500_tx_audio_stream_queued(
+        &receiver->microphone_stream);
+    for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
+        if (receiver->tune_slots[index].submitted) {
+            pending += receiver->tune_slots[index].audio_frames;
+        }
+    }
+    return pending;
+}
+
+int flex1500_usb_rx_microphone_tx_stop_graceful(
+    flex1500_usb_rx *receiver, uint64_t maximum_drain_ms)
+{
+    if (receiver == NULL || receiver->handle == NULL) {
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+    receiver->tx_accepting_audio = false;
+    size_t requested = flex1500_usb_rx_tx_pending_frames(receiver);
+    receiver->microphone_stream.stats.stop_requested_frames += requested;
+    uint64_t started = monotonic_ms();
+    while (flex1500_usb_rx_tx_pending_frames(receiver) != 0 &&
+           monotonic_ms() - started < maximum_drain_ms) {
+        struct timeval timeout = {0, 5000};
+        int result = libusb_handle_events_timeout_completed(
+            receiver->context, &timeout, NULL);
+        if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_INTERRUPTED) {
+            set_libusb_error(receiver, "graceful TX drain", result);
+            break;
+        }
+        if (!receiver->tune_streaming || !receiver->running) break;
+    }
+    size_t discarded = flex1500_usb_rx_tx_pending_frames(receiver);
+    receiver->microphone_stream.stats.graceful_drained_frames +=
+        requested - discarded;
+    receiver->microphone_stream.stats.graceful_discarded_frames += discarded;
+    receiver->microphone_stream.stats.graceful_drain_ms +=
+        monotonic_ms() - started;
     return flex1500_usb_rx_tune_carrier_stop(receiver);
 }
 

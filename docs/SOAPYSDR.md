@@ -49,13 +49,17 @@ locally without retuning the radio.
 
 The owning client reports one `CF32`/`CS16`, 48 ksample/s TX channel and maps it
 to the daemon's leased raw-I/Q API. Stream activation reserves the subordinate
-TX operation and connects its sample tunnel. After the required 24,000-frame
+TX operation and connects its sample tunnel. After the required 4,096-frame
 prebuffer, continuous writes key the transmitter. Deactivation stops PTT,
 releases that TX operation, and closes the stream without surrendering station
 control. Periodic writes renew the TX-operation lease;
-stalled or disconnected clients remain subject to the daemon's data watchdog,
-maximum-key timer, guaranteed-unkey cleanup, drive limiter, and ownership
-rules.
+the daemon applies TCP backpressure when its USB/DSP TX ring is full rather
+than accepting and discarding a client's queued samples. The adapter paces
+post-key writes at the radio's fixed 48 ksample/s rate with a small lead so a
+fast client cannot accumulate seconds of stale audio in operating-system socket
+buffers. Stalled or disconnected clients remain subject to the daemon's data
+watchdog, maximum-key timer, guaranteed-unkey cleanup, drive limiter, and
+ownership rules.
 
 Soapy I/Q is conjugated at the adapter boundary, matching the receive-side
 orientation correction. TX drive is exposed through Soapy's TX gain control as
@@ -64,6 +68,9 @@ advertised only where the complete plus/minus 24 kHz span fits within a
 configured amateur allocation; the daemon independently rechecks that rule at
 PTT start. Soapy timed bursts and `END_BURST` flags are not yet supported;
 applications must use continuous streaming and explicitly deactivate TX.
+Normal deactivation stops sample acceptance and permits a bounded one-second drain
+of meaningful frames already in the daemon's DSP/USB pipeline before unkey.
+Safety-driven stops remain immediate.
 
 ## Build
 
@@ -127,6 +134,52 @@ SoapySDRUtil --check=flex1500
 Installation changes host files only. Starting `flex1500d` remains a separate
 operation, and the SoapySDR module never starts or opens the radio itself.
 
+### Required development update procedure
+
+`cmake --build build` updates `build/libflex1500Support.so`; it does **not**
+replace a module previously installed under `/usr/local`. An SDR application
+using automatic SoapySDR discovery normally loads the installed copy and keeps
+that code in memory until the application exits.
+
+After every change that rebuilds the Soapy adapter, use this procedure before
+a live application test:
+
+1. Completely close SDR Oxide and every other process using the FLEX-1500
+   Soapy module.
+2. Build and test the project.
+3. Install the new artifacts:
+
+   ```sh
+   sudo cmake --install build
+   ```
+
+4. Confirm which installed module SoapySDR discovers and its embedded version:
+
+   ```sh
+   SoapySDRUtil --info | grep flex1500
+   ```
+
+   A connected client's Soapy hardware information also reports
+   `adapter_version` and `adapter_git_revision`.
+
+5. Verify that the build and installed module are byte-for-byte identical. The
+   two hashes printed by this command must match:
+
+   ```sh
+   sha256sum build/libflex1500Support.so \
+     /usr/local/lib/SoapySDR/modules0.8/libflex1500Support.so
+   ```
+
+6. Restart any running `flex1500d` process if the daemon was also rebuilt.
+   Replacing its file does not replace code already loaded by a running
+   process.
+7. Reopen the SDR application only after these checks pass.
+
+The developer or assistant coordinating a live test must explicitly tell the
+operator when installation, daemon restart, or SDR-application restart is
+required. “Built successfully” must not be used to imply that the installed
+module or a running process has been updated.
+
 ## First live validation
 
 Date: 2026-08-29
@@ -160,7 +213,7 @@ and released the session cleanly on every observed test. Daemon logs showed
 successful session acquisition, stream connection, PTT start, PTT stop, and
 session release without an abandoned owner.
 
-TX begins only after the daemon has received its required 24,000-frame
+TX begins only after the daemon has received its required 4,096-frame
 prebuffer. During this validation the adapter's initial PTT attempts returned
 transient `409 Conflict` responses until the daemon had accounted for enough
 samples; a later retry then keyed successfully. This produces a noticeable but
@@ -177,3 +230,27 @@ validated 5 W carrier should use the daemon's browser or HTTP Tune control.
 This validates the adapter-to-daemon Soapy TX lifecycle with SDR Oxide. It does
 not yet establish compatibility with other SoapySDR transmit applications,
 timed bursts, or `END_BURST` operation.
+
+## Installed-module correction and latency validation
+
+Date: 2026-09-14
+
+An audit found that SDR Oxide had continued loading an installed September 4
+module (`0.1.0-0625c40`) while newer adapter code was only being rebuilt in the
+development tree. Earlier Soapy-specific latency and audio tests performed
+with that stale module must therefore not be treated as validation of the
+newer adapter. This incident led to the mandatory build/install/version/hash
+procedure documented above.
+
+After installing the current module and completely reopening SDR Oxide,
+KB1JDX reported substantially faster PTT response and clean, uninterrupted
+audio. The installed module was subsequently verified by `SoapySDRUtil` as
+`0.2.0-80edebb`. Browser HTTP microphone transmission using the same rebuilt
+daemon was also clean and responsive, separating the corrected Soapy adapter
+result from the shared daemon behavior.
+
+Normal-stop testing then exercised browser HTTP, SDR Oxide/SoapySDR, and the
+physical microphone. The complete measured graceful-drain result is recorded
+in the [transmit operator guide](TX_OPERATOR_GUIDE.md). These tests validate
+SDR Oxide only; compatibility with additional Soapy TX applications remains
+open.

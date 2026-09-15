@@ -3,11 +3,17 @@
 #include "flex1500/network_tx.h"
 #include "test_assert.h"
 
-typedef struct calls { unsigned starts, stops; } calls;
+typedef struct calls { unsigned starts, stops, graceful_stops; } calls;
 static int start(void *context, flex1500_tx_owner owner)
 { CHECK(owner == FLEX1500_TX_OWNER_HTTP); ++((calls *)context)->starts; return 0; }
-static int stop(void *context, flex1500_tx_owner owner)
-{ CHECK(owner == FLEX1500_TX_OWNER_HTTP); ++((calls *)context)->stops; return 0; }
+static int stop(void *context, flex1500_tx_owner owner, bool graceful)
+{
+    CHECK(owner == FLEX1500_TX_OWNER_HTTP);
+    calls *state = context;
+    ++state->stops;
+    if (graceful) ++state->graceful_stops;
+    return 0;
+}
 
 int main(void)
 {
@@ -25,7 +31,9 @@ int main(void)
           FLEX1500_NETWORK_TX_NOT_READY);
     CHECK(flex1500_network_tx_attach_stream(&session, 42, 102) ==
           FLEX1500_NETWORK_TX_OK);
-    CHECK(flex1500_network_tx_record_data(&session, 42, 23999, 103) ==
+    CHECK(flex1500_network_tx_record_data(
+              &session, 42,
+              FLEX1500_NETWORK_TX_MIN_PREBUFFER_FRAMES - 1, 103) ==
           FLEX1500_NETWORK_TX_OK);
     CHECK(flex1500_network_tx_ptt_start(&session, 42, 104) ==
           FLEX1500_NETWORK_TX_NOT_READY);
@@ -36,15 +44,18 @@ int main(void)
     CHECK(c.starts == 1 && tx.owner == FLEX1500_TX_OWNER_HTTP);
     CHECK(flex1500_network_tx_ptt_stop(&session, 42) ==
           FLEX1500_NETWORK_TX_OK);
+    CHECK(c.graceful_stops == 1);
     CHECK(flex1500_network_tx_ptt_start(&session, 42, 107) ==
           FLEX1500_NETWORK_TX_NOT_READY);
-    CHECK(flex1500_network_tx_record_data(&session, 42, 24000, 108) ==
+    CHECK(flex1500_network_tx_record_data(
+              &session, 42, FLEX1500_NETWORK_TX_MIN_PREBUFFER_FRAMES, 108) ==
           FLEX1500_NETWORK_TX_OK);
     CHECK(flex1500_network_tx_ptt_start(&session, 42, 109) ==
           FLEX1500_NETWORK_TX_OK);
     CHECK(flex1500_network_tx_disconnect_stream(&session) ==
           FLEX1500_NETWORK_TX_OK);
     CHECK(c.stops == 2 && tx.owner == FLEX1500_TX_OWNER_NONE);
+    CHECK(c.graceful_stops == 1);
     CHECK(flex1500_network_tx_release(&session, 42) == FLEX1500_NETWORK_TX_OK);
 
     flex1500_network_tx_profile iq = {
@@ -53,7 +64,8 @@ int main(void)
           FLEX1500_NETWORK_TX_OK);
     CHECK(flex1500_network_tx_attach_stream(&session, 43, 1001) ==
           FLEX1500_NETWORK_TX_OK);
-    CHECK(flex1500_network_tx_record_data(&session, 43, 24000, 1002) ==
+    CHECK(flex1500_network_tx_record_data(
+              &session, 43, FLEX1500_NETWORK_TX_MIN_PREBUFFER_FRAMES, 1002) ==
           FLEX1500_NETWORK_TX_OK);
     CHECK(flex1500_network_tx_ptt_start(&session, 43, 1003) ==
           FLEX1500_NETWORK_TX_OK);

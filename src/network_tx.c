@@ -131,7 +131,15 @@ flex1500_network_tx_result flex1500_network_tx_ptt_stop(
 {
     if (!owns(session, lease)) return FLEX1500_NETWORK_TX_STALE;
     bool was_keyed = session->keyed;
-    flex1500_network_tx_result result = stop_if_keyed(session);
+    flex1500_network_tx_result result = FLEX1500_NETWORK_TX_OK;
+    if (was_keyed) {
+        flex1500_tx_control_result stopped =
+            flex1500_tx_control_release_graceful(
+                session->tx_control, FLEX1500_TX_OWNER_HTTP);
+        session->keyed = false;
+        result = stopped == FLEX1500_TX_CONTROL_OK
+            ? FLEX1500_NETWORK_TX_OK : FLEX1500_NETWORK_TX_HARDWARE_ERROR;
+    }
     if (was_keyed) session->buffered_frames = 0;
     return result;
 }

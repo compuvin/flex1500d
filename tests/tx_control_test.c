@@ -11,6 +11,7 @@ typedef struct callbacks {
     flex1500_tx_owner last_stopped;
     int start_result;
     int stop_result;
+    bool last_graceful;
 } callbacks;
 
 static int start_owner(void *context, flex1500_tx_owner owner)
@@ -21,11 +22,12 @@ static int start_owner(void *context, flex1500_tx_owner owner)
     return calls->start_result;
 }
 
-static int stop_owner(void *context, flex1500_tx_owner owner)
+static int stop_owner(void *context, flex1500_tx_owner owner, bool graceful)
 {
     callbacks *calls = context;
     ++calls->stops;
     calls->last_stopped = owner;
+    calls->last_graceful = graceful;
     return calls->stop_result;
 }
 
@@ -87,6 +89,7 @@ int main(void)
           FLEX1500_TX_CONTROL_OK);
     CHECK(control.owner == FLEX1500_TX_OWNER_NONE);
     CHECK(calls.last_stopped == FLEX1500_TX_OWNER_PHYSICAL_MIC);
+    CHECK(calls.last_graceful);
 
     CHECK(flex1500_tx_control_request(&control, FLEX1500_TX_OWNER_SOAPY, 3000) ==
           FLEX1500_TX_CONTROL_OK);
@@ -108,6 +111,7 @@ int main(void)
     flex1500_tx_control_shutdown(&control);
     CHECK(control.owner == FLEX1500_TX_OWNER_NONE);
     CHECK(calls.last_stopped == FLEX1500_TX_OWNER_SOAPY);
+    CHECK(!calls.last_graceful);
 
     calls.start_result = -1;
     CHECK(flex1500_tx_control_request(&control, FLEX1500_TX_OWNER_HTTP, 40000) ==

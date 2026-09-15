@@ -19,10 +19,11 @@ static int start_tune(void *context, flex1500_tx_owner owner)
     return state->start_result;
 }
 
-static int stop_tune(void *context, flex1500_tx_owner owner)
+static int stop_tune(void *context, flex1500_tx_owner owner, bool graceful)
 {
     callbacks *state = context;
     CHECK(owner == FLEX1500_TX_OWNER_TUNE);
+    CHECK(!graceful);
     ++state->stops;
     return state->stop_result;
 }

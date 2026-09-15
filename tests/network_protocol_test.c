@@ -13,6 +13,8 @@
 int main(void)
 {
     flex1500_service_status status = {
+        .software_version = "9.8.7",
+        .git_revision = "abcdef12",
         .state = "offline",
         .radio_open = false,
         .network_listening = false,
@@ -45,6 +47,13 @@ int main(void)
         .tx_clipped_frames = 12,
         .tx_limited_frames = 14,
         .tx_dropped_microphone_frames = 13,
+        .tx_queued_frames = 4800,
+        .tx_queued_ms = 100,
+        .tx_peak_queued_frames = 9600,
+        .tx_stop_requested_frames = 2400,
+        .tx_graceful_drained_frames = 2000,
+        .tx_graceful_discarded_frames = 400,
+        .tx_graceful_drain_ms = 200,
         .tx_audio_meter_valid = true,
         .tx_input_peak_dbfs = -6.0f,
         .tx_input_rms_dbfs = -18.0f,
@@ -82,7 +91,7 @@ int main(void)
     };
     char json[4096];
     char radio_json[1024];
-    char http[2048];
+    char http[4096];
     uint8_t frame[64];
     const flex1500_iq_sample samples[] = {{1.0f, -1.0f}};
     size_t page_length = 0;
@@ -113,6 +122,8 @@ int main(void)
 
     size_t json_length = flex1500_build_status_json(&status, json, sizeof(json));
     CHECK(json_length > 0);
+    CHECK(strstr(json, "\"software_version\": \"9.8.7\"") != NULL);
+    CHECK(strstr(json, "\"git_revision\": \"abcdef12\"") != NULL);
     CHECK(strstr(json, "\"api_version\": 1") != NULL);
     CHECK(strstr(json, "\"radio_open\": false") != NULL);
     CHECK(strstr(json, "\"network_frames_sent\": 12") != NULL);
@@ -142,6 +153,14 @@ int main(void)
     CHECK(strstr(json, "\"tx_output_rms_dbfs\": -16.0") != NULL);
     CHECK(strstr(json,
                  "\"tx_dropped_microphone_frames\": 13") != NULL);
+    CHECK(strstr(json, "\"tx_queued_frames\": 4800") != NULL);
+    CHECK(strstr(json, "\"tx_queued_ms\": 100") != NULL);
+    CHECK(strstr(json, "\"tx_peak_queued_frames\": 9600") != NULL);
+    CHECK(strstr(json, "\"tx_stop_requested_frames\": 2400") != NULL);
+    CHECK(strstr(json, "\"tx_graceful_drained_frames\": 2000") != NULL);
+    CHECK(strstr(json,
+                 "\"tx_graceful_discarded_frames\": 400") != NULL);
+    CHECK(strstr(json, "\"tx_graceful_drain_ms\": 200") != NULL);
     CHECK(strstr(json,
                  "\"tx_rejected_ownership_requests\": 8") != NULL);
     CHECK(strstr(json, "\"tx_watchdog_stops\": 7") != NULL);
@@ -185,7 +204,7 @@ int main(void)
 
     {
         int sockets[2];
-        char received[2048] = {0};
+        char received[4096] = {0};
         CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
         ssize_t sent = send(sockets[0], http, http_length, 0);
         if (sent < 0 && errno == EPERM) {

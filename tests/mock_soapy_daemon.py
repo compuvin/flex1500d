@@ -190,7 +190,7 @@ def main() -> int:
         thread.join()
         if result.returncode != 0:
             return result.returncode
-        expected_bytes = 25000 * 4
+        expected_bytes = 33000 * 4
         if (Handler.session_count != 1 or Handler.ptt_starts != 1 or
                 Handler.ptt_stops != 1 or Handler.releases != 1 or
                 len(Handler.tx_bytes) != expected_bytes):

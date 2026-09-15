@@ -42,10 +42,11 @@ static int start_tune(void *context, flex1500_tx_owner owner)
     return radio->result;
 }
 
-static int stop_tune(void *context, flex1500_tx_owner owner)
+static int stop_tune(void *context, flex1500_tx_owner owner, bool graceful)
 {
     fake_radio *radio = context;
     CHECK(owner == FLEX1500_TX_OWNER_TUNE || owner == FLEX1500_TX_OWNER_HTTP);
+    (void)graceful;
     ++radio->tune_stops;
     return 0;
 }
@@ -233,7 +234,9 @@ int main(void)
     CHECK(dispatch(&api,
         "CONNECT /v1/tx/stream HTTP/1.1\r\nX-Flex1500-TX-Lease: 77\r\n\r\n",
         response, &length) == FLEX1500_API_OPEN_TX_STREAM);
-    CHECK(flex1500_network_tx_record_data(&network_tx, 77, 24000, 20001) ==
+    CHECK(flex1500_network_tx_record_data(
+              &network_tx, 77, FLEX1500_NETWORK_TX_MIN_PREBUFFER_FRAMES,
+              20001) ==
           FLEX1500_NETWORK_TX_OK);
     CHECK(dispatch(&api,
         "PUT /v1/tx/ptt/start HTTP/1.1\r\nX-Flex1500-TX-Lease: 77\r\n\r\n",

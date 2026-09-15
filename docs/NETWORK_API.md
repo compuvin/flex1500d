@@ -34,6 +34,11 @@ that path. The page is an API consumer, not a direct USB/radio interface; see
 GET /v1/status HTTP/1.1
 ```
 
+The response includes `software_version` and `git_revision` for the daemon
+process that actually answered the request, in addition to `api_version` for
+the HTTP protocol contract. A development build appends `-dirty` to the Git
+revision when CMake configures from modified tracked sources.
+
 Response content type: `application/json`.
 
 Current fields include:
@@ -54,6 +59,12 @@ Transmit diagnostics are also reported:
   stop attempts;
 - `tx_underruns`, `tx_clipped_frames`, `tx_limited_frames`, and
   `tx_dropped_microphone_frames` report live microphone-stream quality;
+- `tx_queued_frames` and `tx_queued_ms` report meaningful audio/IQ still
+  waiting in the DSP ring or submitted USB transfers, while
+  `tx_peak_queued_frames` records the largest observed queue;
+- `tx_stop_requested_frames`, `tx_graceful_drained_frames`,
+  `tx_graceful_discarded_frames`, and `tx_graceful_drain_ms` accumulate normal
+  PTT-stop drain activity at the fixed 48 ksample/s transmit rate;
 - `tx_audio_meter_valid` and the input, post-gain, and output peak/RMS dBFS
   fields describe the current or most recently started microphone stream;
 - `tx_rejected_ownership_requests` counts busy starts and invalid or mismatched
@@ -61,8 +72,23 @@ Transmit diagnostics are also reported:
 - `tx_watchdog_stops` counts lease-expiry and hard-limit stops; and
 - `tx_cleanup_failures` counts Tune or final PA/amplifier cleanup failures.
 
-The daemon also prints the six-counter summary during shutdown. Counters survive
-an automatic USB recovery within the same daemon process.
+The daemon prints the transmit counters, including graceful-drain totals,
+during shutdown. Counters survive an automatic USB recovery within the same
+daemon process.
+
+A normal HTTP/Soapy PTT stop and physical-microphone release stop accepting new
+samples, drain meaningful frames already held by the DSP and USB schedulers,
+and then unkey. The drain is bounded to one second; frames still pending at that
+deadline are discarded and counted. Disconnect, lease/data watchdog,
+maximum-key timeout, error, ownership preemption, shutdown, and emergency paths
+do not wait for queued audio: they invoke immediate safe-unkey cleanup.
+
+Known diagnostic limitation: `tx_underruns` currently includes zero-I/Q
+scheduler fills during preparation and other muted/non-audible intervals. It
+can therefore grow very large even when monitored on-air audio is complete and
+clean. Treat it as a scheduler activity counter until on-air underruns are
+separated from harmless zero-fill frames; use the queue, dropped-frame, and
+graceful-discard counters when diagnosing tail loss.
 
 Responses include `Content-Length`, close the connection after one request, and
 set `Cache-Control: no-store`.

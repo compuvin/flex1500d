@@ -174,7 +174,7 @@ GitHub releases may include an experimental `amd64` package. Install a
 downloaded package and its declared dependencies with:
 
 ```sh
-sudo apt install ./flex1500d_0.2.0_amd64.deb
+sudo apt install ./flex1500d_0.2.1_amd64.deb
 ```
 
 The package installs `flex1500d`, the SoapySDR module, the udev access rule,
@@ -206,6 +206,14 @@ The standard build produces both the API daemon and the conditional RX/TX
 explicitly transmit-enabled daemon as the station owner. Its test uses a
 synthetic loopback daemon.
 See [the SoapySDR adapter guide](docs/SOAPYSDR.md).
+
+> **Development installation:** Rebuilding updates the artifacts under
+> `build/` but does not update a Soapy module already installed under
+> `/usr/local`. After a Soapy adapter change, fully close SDR applications,
+> run `sudo cmake --install build`, verify the loaded module as described in
+> the adapter guide, and then reopen the application. Restart a running daemon
+> whenever its executable was rebuilt. A live Soapy test is not considered
+> valid until the build and installed module have been verified to match.
 
 SoapySDR can be explicitly omitted for a constrained or daemon-only build with
 `-DFLEX1500_BUILD_SOAPYSDR=OFF`; it is included and required by default.

@@ -46,6 +46,8 @@ constexpr double MIN_FREQUENCY = 100000.0;
 constexpr double MAX_FREQUENCY = 54000000.0;
 constexpr std::size_t FRAME_HEADER_SIZE = 20;
 constexpr std::size_t STREAM_MTU = 1024;
+constexpr std::size_t TX_PREBUFFER_FRAMES = 4096;
+constexpr std::size_t TX_PACING_LEAD_FRAMES = 4096;
 
 const SoapySDR::RangeList TX_FREQUENCY_RANGES = {
     {1824000.0, 1976000.0}, {3524000.0, 3976000.0},
@@ -277,9 +279,11 @@ struct TxStream {
     Socket socket;
     uint64_t lease = 0;
     std::size_t submittedFrames = 0;
+    std::size_t pacedFrames = 0;
     bool active = false;
     bool keyed = false;
     std::chrono::steady_clock::time_point lastKeepalive{};
+    std::chrono::steady_clock::time_point paceEpoch{};
 };
 
 class Flex1500Device final : public SoapySDR::Device {
@@ -355,6 +359,8 @@ public:
     SoapySDR::Kwargs getHardwareInfo() const override
     {
         return {{"daemon", host_ + ":" + std::to_string(port_)},
+                {"adapter_version", FLEX1500_SOFTWARE_VERSION},
+                {"adapter_git_revision", FLEX1500_GIT_REVISION},
                 {"receive_only", daemonTransmitEnabled_ ? "false" : "true"},
                 {"daemon_transmit_enabled",
                  daemonTransmitEnabled_ ? "true" : "false"},
@@ -509,16 +515,30 @@ public:
             return SOAPY_SDR_NOT_SUPPORTED;
         if (numElems == 0) return 0;
         if (!keepTxAlive(*stream)) return SOAPY_SDR_STREAM_ERROR;
-        std::vector<int16_t> wire(numElems * 2);
+        if (!stream->keyed &&
+            stream->submittedFrames >= TX_PREBUFFER_FRAMES) {
+            const int keyed = keyTx(*stream, timeoutUs);
+            if (keyed != 0) return keyed;
+        }
+        size_t frames = numElems;
+        if (!stream->keyed) {
+            frames = std::min(frames,
+                TX_PREBUFFER_FRAMES - stream->submittedFrames);
+        } else {
+            const int paced = paceTx(*stream, frames, timeoutUs);
+            if (paced < 0) return paced;
+            frames = static_cast<size_t>(paced);
+        }
+        std::vector<int16_t> wire(frames * 2);
         if (stream->format == SOAPY_SDR_CF32) {
             const auto *input = static_cast<const std::complex<float> *>(buffers[0]);
-            for (size_t index = 0; index < numElems; ++index) {
+            for (size_t index = 0; index < frames; ++index) {
                 wire[index * 2] = normalizedS16(input[index].real());
                 wire[index * 2 + 1] = normalizedS16(-input[index].imag());
             }
         } else {
             const auto *input = static_cast<const int16_t *>(buffers[0]);
-            for (size_t index = 0; index < numElems; ++index) {
+            for (size_t index = 0; index < frames; ++index) {
                 wire[index * 2] = input[index * 2];
                 wire[index * 2 + 1] = input[index * 2 + 1] == INT16_MIN
                     ? INT16_MAX : static_cast<int16_t>(-input[index * 2 + 1]);
@@ -527,14 +547,14 @@ public:
         const int sent = sendTxBytes(stream->socket.get(), wire.data(),
                                      wire.size() * sizeof(int16_t), timeoutUs);
         if (sent < 0) return sent;
-        stream->submittedFrames += numElems;
-        if (!stream->keyed && stream->submittedFrames > 24000) {
-            const HttpResponse keyed = leaseRequest(
-                "PUT", "/v1/tx/ptt/start", stream->lease);
-            if (keyed.status == 200) stream->keyed = true;
-            else if (keyed.status != 409) return SOAPY_SDR_STREAM_ERROR;
+        stream->submittedFrames += frames;
+        if (stream->keyed) stream->pacedFrames += frames;
+        if (!stream->keyed &&
+            stream->submittedFrames >= TX_PREBUFFER_FRAMES) {
+            const int keyed = keyTx(*stream, timeoutUs);
+            if (keyed != 0 && keyed != SOAPY_SDR_TIMEOUT) return keyed;
         }
-        return static_cast<int>(numElems);
+        return static_cast<int>(frames);
     }
     void setFrequency(int direction, size_t channel, double frequency,
                       const SoapySDR::Kwargs &) override
@@ -862,6 +882,7 @@ private:
         }
         stream.socket = std::move(connected.socket);
         stream.submittedFrames = 0;
+        stream.pacedFrames = 0;
         stream.keyed = false;
         stream.active = true;
         stream.lastKeepalive = std::chrono::steady_clock::now();
@@ -881,6 +902,7 @@ private:
         stream.socket.close();
         stream.lease = 0;
         stream.submittedFrames = 0;
+        stream.pacedFrames = 0;
         stream.keyed = false;
         stream.active = false;
     }
@@ -893,6 +915,52 @@ private:
         if (response.status != 200) return false;
         stream.lastKeepalive = now;
         return true;
+    }
+    int keyTx(TxStream &stream, long timeoutUs)
+    {
+        const auto started = std::chrono::steady_clock::now();
+        for (;;) {
+            const HttpResponse response = leaseRequest(
+                "PUT", "/v1/tx/ptt/start", stream.lease);
+            if (response.status == 200) {
+                stream.keyed = true;
+                stream.pacedFrames = 0;
+                stream.paceEpoch = std::chrono::steady_clock::now();
+                return 0;
+            }
+            if (response.status != 409 ||
+                response.body.find("\"error\":\"tx_not_ready\"") ==
+                    std::string::npos) return SOAPY_SDR_STREAM_ERROR;
+            if (timeoutUs >= 0) {
+                const auto elapsed = std::chrono::duration_cast<
+                    std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - started).count();
+                if (elapsed >= timeoutUs) return SOAPY_SDR_TIMEOUT;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    static int paceTx(TxStream &stream, size_t requested, long timeoutUs)
+    {
+        const auto started = std::chrono::steady_clock::now();
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed = std::chrono::duration_cast<
+                std::chrono::microseconds>(now - stream.paceEpoch).count();
+            const uint64_t elapsedFrames = elapsed > 0
+                ? static_cast<uint64_t>(elapsed) * 48000 / 1000000 : 0;
+            const uint64_t budget = elapsedFrames + TX_PACING_LEAD_FRAMES;
+            if (budget > stream.pacedFrames) {
+                return static_cast<int>(std::min<uint64_t>(
+                    requested, budget - stream.pacedFrames));
+            }
+            if (timeoutUs >= 0) {
+                const auto waited = std::chrono::duration_cast<
+                    std::chrono::microseconds>(now - started).count();
+                if (waited >= timeoutUs) return SOAPY_SDR_TIMEOUT;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
     static int sendTxBytes(int fd, const void *data, size_t length,
                            long timeoutUs)

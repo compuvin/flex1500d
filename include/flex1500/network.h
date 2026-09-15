@@ -16,6 +16,8 @@ enum {
 };
 
 typedef struct flex1500_service_status {
+    const char *software_version;
+    const char *git_revision;
     const char *state;
     bool radio_open;
     bool network_listening;
@@ -67,6 +69,13 @@ typedef struct flex1500_service_status {
     uint64_t tx_clipped_frames;
     uint64_t tx_limited_frames;
     uint64_t tx_dropped_microphone_frames;
+    uint64_t tx_queued_frames;
+    uint64_t tx_queued_ms;
+    uint64_t tx_peak_queued_frames;
+    uint64_t tx_stop_requested_frames;
+    uint64_t tx_graceful_drained_frames;
+    uint64_t tx_graceful_discarded_frames;
+    uint64_t tx_graceful_drain_ms;
     bool tx_audio_meter_valid;
     float tx_input_peak_dbfs;
     float tx_input_rms_dbfs;

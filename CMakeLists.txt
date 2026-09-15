@@ -2,7 +2,27 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(flex1500d VERSION 0.2.0 LANGUAGES C CXX)
+project(flex1500d VERSION 0.2.1 LANGUAGES C CXX)
+
+execute_process(
+    COMMAND git rev-parse --short=8 HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE FLEX1500_GIT_REVISION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT FLEX1500_GIT_REVISION)
+    set(FLEX1500_GIT_REVISION "unknown")
+endif()
+execute_process(
+    COMMAND git diff --quiet --ignore-submodules HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    RESULT_VARIABLE FLEX1500_GIT_DIRTY
+    ERROR_QUIET
+)
+if(NOT FLEX1500_GIT_DIRTY EQUAL 0)
+    string(APPEND FLEX1500_GIT_REVISION "-dirty")
+endif()
 
 include(CTest)
 include(GNUInstallDirs)
@@ -31,6 +51,10 @@ if(FLEX1500_BUILD_SOAPYSDR)
     )
     target_compile_options(flex1500Support PRIVATE
         -Wall -Wextra -Wpedantic
+    )
+    target_compile_definitions(flex1500Support PRIVATE
+        FLEX1500_SOFTWARE_VERSION="${PROJECT_VERSION}"
+        FLEX1500_GIT_REVISION="${FLEX1500_GIT_REVISION}"
     )
 endif()
 
@@ -136,6 +160,10 @@ target_compile_options(flex1500-info PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(flex1500d src/flex1500d.c)
 target_link_libraries(flex1500d PRIVATE flex1500_usb_rx)
 target_compile_options(flex1500d PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(flex1500d PRIVATE
+    FLEX1500_SOFTWARE_VERSION="${PROJECT_VERSION}"
+    FLEX1500_GIT_REVISION="${FLEX1500_GIT_REVISION}"
+)
 install(TARGETS flex1500d
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )

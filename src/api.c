@@ -418,8 +418,7 @@ flex1500_api_action flex1500_api_dispatch(
             return FLEX1500_API_PUSH_TX_AUDIO;
         }
         if (result == FLEX1500_NETWORK_TX_BUSY ||
-            result == FLEX1500_NETWORK_TX_STALE ||
-            result == FLEX1500_NETWORK_TX_NOT_READY) {
+            result == FLEX1500_NETWORK_TX_STALE) {
             ++controller->tune_control->diagnostics.rejected_ownership_requests;
         }
         char body[256];

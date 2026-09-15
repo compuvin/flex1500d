@@ -37,7 +37,8 @@ typedef enum flex1500_tx_control_result {
 typedef int (*flex1500_tx_owner_start)(void *context,
                                        flex1500_tx_owner owner);
 typedef int (*flex1500_tx_owner_stop)(void *context,
-                                      flex1500_tx_owner owner);
+                                      flex1500_tx_owner owner,
+                                      bool graceful);
 
 typedef struct flex1500_tx_control {
     bool enabled;
@@ -68,6 +69,8 @@ void flex1500_tx_control_arm_physical_ptt(flex1500_tx_control *control);
 flex1500_tx_control_result flex1500_tx_control_request(
     flex1500_tx_control *control, flex1500_tx_owner owner, uint64_t now_ms);
 flex1500_tx_control_result flex1500_tx_control_release(
+    flex1500_tx_control *control, flex1500_tx_owner owner);
+flex1500_tx_control_result flex1500_tx_control_release_graceful(
     flex1500_tx_control *control, flex1500_tx_owner owner);
 flex1500_tx_control_result flex1500_tx_control_physical_ptt(
     flex1500_tx_control *control, bool pressed, uint64_t now_ms);

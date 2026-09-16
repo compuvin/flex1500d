@@ -78,9 +78,10 @@ functions performed inside the radio.
   steps across representative bands if that additional accuracy proves useful.
 - [ ] Implement daemon-generated AM, FM, and CW transmit modulation if desired,
   with mode-specific limits and live dummy-load validation.
-- [ ] Document how external raw-I/Q applications should generate and constrain
+- [x] Document how external raw-I/Q applications should generate and constrain
   other analog or digital emissions; the daemon must not imply that arbitrary
-  I/Q is automatically legal or spectrally clean.
+  I/Q is automatically legal or spectrally clean. (See the
+  [raw I/Q interoperability guide](RAW_IQ_INTEROPERABILITY.md).)
 - [ ] Validate physical microphone LSB transmission with the same rigor already
   applied to USB.
 - [ ] Test SoapySDR transmit and station ownership with additional established

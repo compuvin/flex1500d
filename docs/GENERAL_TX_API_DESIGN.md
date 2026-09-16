@@ -45,8 +45,11 @@ accepted. Intended values are `usb`, `lsb`, `am`, `fm`, `cw`, and `iq`:
 - `audio` supplies mono baseband PCM to a mode-specific daemon modulator. It is
   valid only for an implemented audio modulation such as USB or LSB.
 - `iq` supplies already-modulated complex baseband samples. It requires mode
-  `iq`; the daemon applies no voice-mode modulator but still applies sample-rate,
-  bandwidth, magnitude, drive, ownership, and RF safety enforcement.
+  `iq`; the daemon applies no voice-mode modulator. It enforces sample rate,
+  final complex magnitude, drive, ownership, and coarse center-frequency
+  containment, but it does not inspect occupied bandwidth or spectral purity.
+  Client responsibilities are documented in the
+  [raw I/Q interoperability guide](RAW_IQ_INTEROPERABILITY.md).
 
 Raw I/Q is accepted only when the complete 48 kHz Nyquist span (24 kHz on each
 side of the center frequency) remains inside one configured amateur allocation.
@@ -98,7 +101,7 @@ URL. Status responses report owner type and state but never this lease.
 | `PUT /v1/tx/sessions/keepalive` | Renew the short ownership/liveness deadline. |
 | `CONNECT /v1/tx/stream` | Open the one raw sample tunnel matching the reserved source and declared sample format. |
 | `PUT /v1/tx/ptt/start` | Validate interlocks and prebuffer, then key this session. |
-| `PUT /v1/tx/ptt/stop` | Immediately unkey but retain the unkeyed session for reuse. |
+| `PUT /v1/tx/ptt/stop` | Stop accepting samples, perform the bounded normal drain, and retain the unkeyed session for reuse. |
 | `DELETE /v1/tx/sessions/current` | Unkey if necessary, close the stream, and relinquish ownership. |
 
 Every route except session creation requires `X-Flex1500-TX-Lease`. Future API

@@ -107,6 +107,7 @@ endif()
 
 add_library(flex1500_protocol STATIC
     src/api.c
+    src/config.c
     src/dsp.c
     src/iq.c
     src/network.c
@@ -166,6 +167,9 @@ target_compile_definitions(flex1500d PRIVATE
 )
 install(TARGETS flex1500d
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(FILES flex1500d.conf
+    DESTINATION /etc/flex1500d
 )
 
 add_executable(flex1500-status-probe src/flex1500_status_probe.c)
@@ -366,6 +370,17 @@ target_compile_options(flex1500-settled-rx-capture PRIVATE
 )
 
 if(BUILD_TESTING)
+    add_executable(config-test tests/config_test.c)
+    target_link_libraries(config-test PRIVATE flex1500_protocol)
+    target_compile_options(config-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME config COMMAND config-test)
+    add_test(NAME daemon-config-check
+        COMMAND flex1500d --config ${CMAKE_CURRENT_SOURCE_DIR}/flex1500d.conf
+                --check-config)
+    add_test(NAME daemon-config-print-with-overrides
+        COMMAND flex1500d --config ${CMAKE_CURRENT_SOURCE_DIR}/flex1500d.conf
+                --no-daemon --http-port 16000 --disable-test-page
+                --print-effective-config)
     add_executable(api-controller-test tests/api_controller_test.c)
     target_link_libraries(api-controller-test PRIVATE flex1500_protocol)
     target_compile_options(api-controller-test PRIVATE

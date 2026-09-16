@@ -93,8 +93,9 @@ ownership. Merely browsing memories should remain read-only.
 
 - [ ] Document a recommended client-side method for recording demodulated
   audio from the API.
-- [ ] Document a recommended client-side method for recording and replaying raw
-  I/Q, including sample format and metadata needed for correct tuning.
+- [x] Document a recommended client-side method for recording and replaying raw
+  I/Q, including sample format and metadata needed for correct tuning. (See the
+  [raw I/Q interoperability guide](RAW_IQ_INTEROPERABILITY.md).)
 - [ ] Decide whether unattended server-side audio or I/Q recording is useful
   enough to justify storage management and an additional API.
 - [ ] Design scanning as an API client or automation service using memories,

@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "flex1500/api.h"
+#include "flex1500/config.h"
 #include "flex1500/dsp.h"
 #include "flex1500/iq.h"
 #include "flex1500/network.h"
@@ -21,6 +22,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/random.h>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <time.h>
 #include <poll.h>
@@ -83,6 +85,14 @@ static void print_usage(const char *program)
            program);
     printf("       %s --serve-live-rx PORT --initialize-radio-and-enable-transmit [--enable-test-page]\n",
            program);
+    printf("       %s [--config PATH] [--daemon|--no-daemon]\n", program);
+    printf("          [--radio-mode offline|receive|rx-tuning|transmit]\n");
+    printf("          [--http-bind IPV4] [--http-port PORT]\n");
+    printf("          [--enable-test-page|--disable-test-page]\n");
+    printf("       %s [--config PATH] --check-config|--print-effective-config\n",
+           program);
+    printf("Default configuration: %s (optional when not explicitly named).\n",
+           FLEX1500_DEFAULT_CONFIG_PATH);
     puts("Default, status, analysis, demod, framing, and offline-server modes");
     puts("do not open the radio. --frame-capture is offline file conversion.");
     puts("--demod is offline and writes 48 kHz mono PCM16 WAV audio.");
@@ -211,7 +221,8 @@ static int send_web_ui(int socket_fd)
         send_all(socket_fd, page, page_length) : -1;
 }
 
-static int open_listener(const char *port_text, unsigned long *port)
+static int open_listener(const char *bind_address, const char *port_text,
+                         unsigned long *port)
 {
     char *end = NULL;
     *port = strtoul(port_text, &end, 10);
@@ -226,8 +237,12 @@ static int open_listener(const char *port_text, unsigned long *port)
     struct sockaddr_in address = {
         .sin_family = AF_INET,
         .sin_port = htons((uint16_t)*port),
-        .sin_addr.s_addr = htonl(INADDR_ANY),
     };
+    if (inet_pton(AF_INET, bind_address, &address.sin_addr) != 1) {
+        fprintf(stderr, "Invalid IPv4 bind address: %s\n", bind_address);
+        close(listener);
+        return -1;
+    }
     if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
         listen(listener, 8) != 0) {
         close(listener);
@@ -236,10 +251,11 @@ static int open_listener(const char *port_text, unsigned long *port)
     return listener;
 }
 
-static int serve_offline(const char *port_text, bool test_page_enabled)
+static int serve_offline_at(const char *bind_address, const char *port_text,
+                            bool test_page_enabled)
 {
     unsigned long parsed;
-    int listener = open_listener(port_text, &parsed);
+    int listener = open_listener(bind_address, port_text, &parsed);
     if (listener < 0) {
         perror("open listener");
         return EXIT_FAILURE;
@@ -248,8 +264,8 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
     server_stop_requested = 0;
     signal(SIGINT, request_server_stop);
     signal(SIGTERM, request_server_stop);
-    printf("flex1500d offline API listening on 0.0.0.0:%lu (unauthenticated trusted-LAN access)\n",
-           parsed);
+    printf("flex1500d offline API listening on %s:%lu (unauthenticated trusted-LAN access)\n",
+           bind_address, parsed);
     fflush(stdout);
 
     flex1500_service_status status = {
@@ -299,6 +315,11 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
     }
     close(listener);
     return EXIT_SUCCESS;
+}
+
+static int serve_offline(const char *port_text, bool test_page_enabled)
+{
+    return serve_offline_at("0.0.0.0", port_text, test_page_enabled);
 }
 
 enum { MAX_IQ_CLIENTS = 4 };
@@ -607,11 +628,12 @@ static void daemon_tx_shutdown(flex1500_tx_control *tx_control,
     }
 }
 
-static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
-                         bool test_page_enabled, bool transmit_enabled)
+static int serve_live_rx_at(const char *bind_address, const char *port_text,
+                            bool rx_tuning_enabled, bool test_page_enabled,
+                            bool transmit_enabled)
 {
     unsigned long port;
-    int listener = open_listener(port_text, &port);
+    int listener = open_listener(bind_address, port_text, &port);
     if (listener < 0) {
         perror("open listener");
         return EXIT_FAILURE;
@@ -672,8 +694,8 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
     signal(SIGTERM, request_server_stop);
     printf("[startup] FLEX-1500 initialized; receive-only USB stream active\n");
     printf("[startup] receive gain set to +20 dB\n");
-    printf("[startup] API listening on 0.0.0.0:%lu (unauthenticated, tuning=%s, test-page=%s)\n",
-           port, rx_tuning_enabled ? "enabled" : "disabled",
+    printf("[startup] API listening on %s:%lu (unauthenticated, tuning=%s, test-page=%s)\n",
+           bind_address, port, rx_tuning_enabled ? "enabled" : "disabled",
            test_page_enabled ? "enabled" : "disabled");
     printf("[startup] 5 W Tune API: %s%s\n",
            transmit_enabled ? "enabled" : "disabled",
@@ -1226,6 +1248,13 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
     return server_stop_requested ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
+static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
+                         bool test_page_enabled, bool transmit_enabled)
+{
+    return serve_live_rx_at("0.0.0.0", port_text, rx_tuning_enabled,
+                            test_page_enabled, transmit_enabled);
+}
+
 static int analyze_file(const char *path)
 {
     FILE *input = fopen(path, "rb");
@@ -1506,9 +1535,153 @@ done:
     return result;
 }
 
+static bool is_configured_option(const char *argument)
+{
+    return strcmp(argument, "--config") == 0 ||
+           strcmp(argument, "--check-config") == 0 ||
+           strcmp(argument, "--print-effective-config") == 0 ||
+           strcmp(argument, "--daemon") == 0 ||
+           strcmp(argument, "--no-daemon") == 0 ||
+           strcmp(argument, "--radio-mode") == 0 ||
+           strcmp(argument, "--http-bind") == 0 ||
+           strcmp(argument, "--http-port") == 0 ||
+           strcmp(argument, "--enable-test-page") == 0 ||
+           strcmp(argument, "--disable-test-page") == 0;
+}
+
+static bool configured_invocation(int argc, char **argv)
+{
+    if (argc == 1) return true;
+    if (strcmp(argv[1], "--status") == 0 ||
+        strcmp(argv[1], "--help") == 0 ||
+        strcmp(argv[1], "--analyze") == 0 ||
+        strcmp(argv[1], "--frame-capture") == 0 ||
+        strcmp(argv[1], "--demod") == 0 ||
+        strcmp(argv[1], "--serve-offline") == 0 ||
+        strcmp(argv[1], "--serve-live-rx") == 0) return false;
+    for (int index = 1; index < argc; ++index) {
+        if (is_configured_option(argv[index])) return true;
+    }
+    return false;
+}
+
+static bool valid_port_text(const char *text, uint16_t *port)
+{
+    char *end = NULL;
+    errno = 0;
+    unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value == 0 ||
+        value > 65535) return false;
+    *port = (uint16_t)value;
+    return true;
+}
+
+static int run_configured(int argc, char **argv)
+{
+    const char *path = FLEX1500_DEFAULT_CONFIG_PATH;
+    bool explicit_path = false;
+    bool check_only = false;
+    bool print_config = false;
+    for (int index = 1; index < argc; ++index) {
+        if (strcmp(argv[index], "--config") == 0) {
+            if (++index >= argc) {
+                fputs("--config requires a path\n", stderr);
+                return EXIT_FAILURE;
+            }
+            path = argv[index];
+            explicit_path = true;
+        }
+    }
+
+    flex1500_config config;
+    flex1500_config_defaults(&config);
+    char error[512];
+    if (!flex1500_config_load(&config, path, !explicit_path, error,
+                              sizeof(error))) {
+        fprintf(stderr, "Configuration error: %s\n", error);
+        return EXIT_FAILURE;
+    }
+
+    for (int index = 1; index < argc; ++index) {
+        const char *option = argv[index];
+        if (strcmp(option, "--config") == 0) {
+            ++index;
+        } else if (strcmp(option, "--check-config") == 0) {
+            check_only = true;
+        } else if (strcmp(option, "--print-effective-config") == 0) {
+            print_config = true;
+        } else if (strcmp(option, "--daemon") == 0) {
+            config.daemon_enabled = true;
+        } else if (strcmp(option, "--no-daemon") == 0) {
+            config.daemon_enabled = false;
+        } else if (strcmp(option, "--enable-test-page") == 0) {
+            config.test_page_enabled = true;
+        } else if (strcmp(option, "--disable-test-page") == 0) {
+            config.test_page_enabled = false;
+        } else if (strcmp(option, "--radio-mode") == 0) {
+            if (++index >= argc ||
+                !flex1500_parse_radio_mode(argv[index], &config.radio_mode)) {
+                fputs("--radio-mode requires offline, receive, rx-tuning, or transmit\n",
+                      stderr);
+                return EXIT_FAILURE;
+            }
+        } else if (strcmp(option, "--http-bind") == 0) {
+            if (++index >= argc || strlen(argv[index]) == 0 ||
+                strlen(argv[index]) >= sizeof(config.http_bind)) {
+                fputs("--http-bind requires a numeric IPv4 address\n", stderr);
+                return EXIT_FAILURE;
+            }
+            strcpy(config.http_bind, argv[index]);
+        } else if (strcmp(option, "--http-port") == 0) {
+            if (++index >= argc ||
+                !valid_port_text(argv[index], &config.http_port)) {
+                fputs("--http-port requires a value from 1 through 65535\n",
+                      stderr);
+                return EXIT_FAILURE;
+            }
+        } else {
+            fprintf(stderr, "Unknown configured-daemon option: %s\n", option);
+            return EXIT_FAILURE;
+        }
+    }
+
+    struct in_addr parsed_address;
+    if (inet_pton(AF_INET, config.http_bind, &parsed_address) != 1) {
+        fprintf(stderr, "Invalid IPv4 bind address: %s\n", config.http_bind);
+        return EXIT_FAILURE;
+    }
+    if (print_config) flex1500_config_print(&config, path);
+    if (check_only) {
+        printf("Configuration valid: %s\n", path);
+        return EXIT_SUCCESS;
+    }
+    if (print_config || !config.daemon_enabled) {
+        if (!print_config) print_idle_status();
+        return EXIT_SUCCESS;
+    }
+
+    char port[6];
+    snprintf(port, sizeof(port), "%u", (unsigned int)config.http_port);
+    printf("[config] loaded %s; effective radio mode=%s, test-page=%s\n",
+           path, flex1500_radio_mode_name(config.radio_mode),
+           config.test_page_enabled ? "enabled" : "disabled");
+    fflush(stdout);
+    if (config.radio_mode == FLEX1500_RADIO_DISABLED) {
+        return serve_offline_at(config.http_bind, port,
+                                config.test_page_enabled);
+    }
+    return serve_live_rx_at(
+        config.http_bind, port,
+        config.radio_mode == FLEX1500_RADIO_RX_TUNING ||
+            config.radio_mode == FLEX1500_RADIO_TRANSMIT,
+        config.test_page_enabled,
+        config.radio_mode == FLEX1500_RADIO_TRANSMIT);
+}
+
 int main(int argc, char **argv)
 {
-    if (argc == 1 || (argc == 2 && strcmp(argv[1], "--status") == 0)) {
+    if (configured_invocation(argc, argv)) return run_configured(argc, argv);
+    if (argc == 2 && strcmp(argv[1], "--status") == 0) {
         print_idle_status();
         return EXIT_SUCCESS;
     }

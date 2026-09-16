@@ -258,6 +258,22 @@ Unplug and reconnect the radio again after removal. Additional details are in
 Live commands open and initialize the radio and therefore change radio state.
 Review the command and ensure no other program owns the FLEX-1500 first.
 
+Installed packages automatically provide `/etc/flex1500d/flex1500d.conf`.
+Its default starts RX with frequency tuning enabled while leaving transmit and
+the browser test page disabled. The same RX-only defaults apply if that file is
+absent, so normal foreground startup is simply:
+
+```sh
+flex1500d
+```
+
+The default path can be replaced with `--config PATH`, and individual values
+can be overridden on the command line. Use `--check-config` or
+`--print-effective-config` to inspect configuration without opening the radio.
+See the [configuration reference](docs/CONFIGURATION.md).
+
+The legacy exact mode commands remain available:
+
 Initialization and receive streaming without API tuning:
 
 ```sh

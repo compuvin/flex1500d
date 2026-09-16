@@ -26,6 +26,8 @@ int main(void)
     CHECK(config.daemon_enabled);
     CHECK(config.radio_mode == FLEX1500_RADIO_RX_TUNING);
     CHECK(config.http_port == 15000);
+    CHECK(!config.rtl_tcp_enabled);
+    CHECK(config.rtl_tcp_port == 1234);
 
     char path[] = "/tmp/flex1500-config-test-XXXXXX";
     int fd = mkstemp(path);
@@ -33,7 +35,8 @@ int main(void)
     close(fd);
     CHECK(write_config(path,
         "[daemon]\nenabled=yes\n[radio]\nmode=transmit\n"
-        "[http]\nbind=127.0.0.1\nport=16000\ntest_page=true\n"));
+        "[http]\nbind=127.0.0.1\nport=16000\ntest_page=true\n"
+        "[rtl_tcp]\nenabled=true\nbind=127.0.0.2\nport=1235\n"));
     char error[256];
     CHECK(flex1500_config_load(&config, path, false, error, sizeof(error)));
     CHECK(config.daemon_enabled);
@@ -41,6 +44,9 @@ int main(void)
     CHECK(strcmp(config.http_bind, "127.0.0.1") == 0);
     CHECK(config.http_port == 16000);
     CHECK(config.test_page_enabled);
+    CHECK(config.rtl_tcp_enabled);
+    CHECK(strcmp(config.rtl_tcp_bind, "127.0.0.2") == 0);
+    CHECK(config.rtl_tcp_port == 1235);
 
     CHECK(write_config(path, "[http]\nport=15000\nport=16000\n"));
     flex1500_config_defaults(&config);

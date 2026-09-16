@@ -30,6 +30,11 @@ mode=rx-tuning
 bind=0.0.0.0
 port=15000
 test_page=false
+
+[rtl_tcp]
+enabled=false
+bind=0.0.0.0
+port=1234
 ```
 
 Valid radio modes are:
@@ -62,6 +67,7 @@ Temporary overrides include:
 flex1500d --http-port 16000 --enable-test-page
 flex1500d --radio-mode receive --http-bind 127.0.0.1
 flex1500d --no-daemon --print-effective-config
+flex1500d --enable-rtl-tcp --rtl-tcp-port 1234
 ```
 
 Boolean settings have matching enable/disable overrides so a value enabled in
@@ -72,5 +78,8 @@ The API remains unauthenticated. Binding to `0.0.0.0` makes it reachable from
 other computers; use a firewall to restrict it to trusted LAN hosts. Runtime
 state such as frequency, ownership leases, PTT state, and counters is not
 stored in this file.
+
+The experimental receive-only [`rtl_tcp` compatibility listener](RTL_TCP.md)
+is independently controlled by its section and remains disabled by default.
 
 The earlier exact mode commands remain supported for scripts and testing.

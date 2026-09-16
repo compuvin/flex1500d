@@ -272,6 +272,10 @@ can be overridden on the command line. Use `--check-config` or
 `--print-effective-config` to inspect configuration without opening the radio.
 See the [configuration reference](docs/CONFIGURATION.md).
 
+An experimental receive-only [`rtl_tcp` compatibility listener](docs/RTL_TCP.md)
+is available for clients without the project Soapy adapter. It is disabled by
+default and uses the FLEX-1500's fixed 48 ksample/s bandwidth.
+
 The legacy exact mode commands remain available:
 
 Initialization and receive streaming without API tuning:

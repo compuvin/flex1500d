@@ -19,6 +19,9 @@ void flex1500_config_defaults(flex1500_config *config)
         .http_bind = "0.0.0.0",
         .http_port = 15000,
         .test_page_enabled = false,
+        .rtl_tcp_enabled = false,
+        .rtl_tcp_bind = "0.0.0.0",
+        .rtl_tcp_port = 1234,
     };
 }
 
@@ -91,10 +94,11 @@ bool flex1500_config_load(flex1500_config *config, const char *path,
         return fail(error, error_size, path, 0, detail);
     }
 
-    enum { SECTION_NONE, SECTION_DAEMON, SECTION_RADIO, SECTION_HTTP } section =
-        SECTION_NONE;
+    enum { SECTION_NONE, SECTION_DAEMON, SECTION_RADIO, SECTION_HTTP,
+           SECTION_RTL_TCP } section = SECTION_NONE;
     enum { SEEN_ENABLED = 1, SEEN_MODE = 2, SEEN_BIND = 4,
-           SEEN_PORT = 8, SEEN_TEST_PAGE = 16 };
+           SEEN_PORT = 8, SEEN_TEST_PAGE = 16, SEEN_RTL_ENABLED = 32,
+           SEEN_RTL_BIND = 64, SEEN_RTL_PORT = 128 };
     unsigned int seen = 0;
     unsigned int line_number = 0;
     char line[512];
@@ -119,6 +123,7 @@ bool flex1500_config_load(flex1500_config *config, const char *path,
             if (strcmp(name, "daemon") == 0) section = SECTION_DAEMON;
             else if (strcmp(name, "radio") == 0) section = SECTION_RADIO;
             else if (strcmp(name, "http") == 0) section = SECTION_HTTP;
+            else if (strcmp(name, "rtl_tcp") == 0) section = SECTION_RTL_TCP;
             else {
                 valid = fail(error, error_size, path, line_number,
                              "unknown section");
@@ -159,6 +164,22 @@ bool flex1500_config_load(flex1500_config *config, const char *path,
         } else if (section == SECTION_HTTP && strcmp(key, "test_page") == 0) {
             bit = SEEN_TEST_PAGE;
             parsed = parse_bool(value, &config->test_page_enabled);
+        } else if (section == SECTION_RTL_TCP && strcmp(key, "enabled") == 0) {
+            bit = SEEN_RTL_ENABLED;
+            parsed = parse_bool(value, &config->rtl_tcp_enabled);
+        } else if (section == SECTION_RTL_TCP && strcmp(key, "bind") == 0) {
+            bit = SEEN_RTL_BIND;
+            size_t length = strlen(value);
+            parsed = length > 0 && length < sizeof(config->rtl_tcp_bind);
+            if (parsed) memcpy(config->rtl_tcp_bind, value, length + 1);
+        } else if (section == SECTION_RTL_TCP && strcmp(key, "port") == 0) {
+            bit = SEEN_RTL_PORT;
+            char *end = NULL;
+            errno = 0;
+            unsigned long port = strtoul(value, &end, 10);
+            parsed = errno == 0 && end != value && *end == '\0' &&
+                     port > 0 && port <= 65535;
+            if (parsed) config->rtl_tcp_port = (uint16_t)port;
         } else {
             valid = fail(error, error_size, path, line_number, "unknown key");
             break;
@@ -187,4 +208,7 @@ void flex1500_config_print(const flex1500_config *config, const char *path)
     printf("[http]\nbind=%s\nport=%u\ntest_page=%s\n",
            config->http_bind, (unsigned int)config->http_port,
            config->test_page_enabled ? "true" : "false");
+    printf("\n[rtl_tcp]\nenabled=%s\nbind=%s\nport=%u\n",
+           config->rtl_tcp_enabled ? "true" : "false",
+           config->rtl_tcp_bind, (unsigned int)config->rtl_tcp_port);
 }

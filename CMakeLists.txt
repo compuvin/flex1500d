@@ -113,6 +113,7 @@ add_library(flex1500_protocol STATIC
     src/network.c
     src/publisher.c
     src/protocol.c
+    src/rtl_tcp.c
     src/web_ui.c
 )
 
@@ -381,6 +382,10 @@ if(BUILD_TESTING)
         COMMAND flex1500d --config ${CMAKE_CURRENT_SOURCE_DIR}/flex1500d.conf
                 --no-daemon --http-port 16000 --disable-test-page
                 --print-effective-config)
+    add_executable(rtl-tcp-test tests/rtl_tcp_test.c)
+    target_link_libraries(rtl-tcp-test PRIVATE flex1500_protocol)
+    target_compile_options(rtl-tcp-test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME rtl-tcp COMMAND rtl-tcp-test)
     add_executable(api-controller-test tests/api_controller_test.c)
     target_link_libraries(api-controller-test PRIVATE flex1500_protocol)
     target_compile_options(api-controller-test PRIVATE

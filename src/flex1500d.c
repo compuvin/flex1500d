@@ -9,6 +9,7 @@
 #include "flex1500/network.h"
 #include "flex1500/publisher.h"
 #include "flex1500/protocol.h"
+#include "flex1500/rtl_tcp.h"
 #include "flex1500/usb_rx.h"
 #include "flex1500/web_ui.h"
 
@@ -89,6 +90,8 @@ static void print_usage(const char *program)
     printf("          [--radio-mode offline|receive|rx-tuning|transmit]\n");
     printf("          [--http-bind IPV4] [--http-port PORT]\n");
     printf("          [--enable-test-page|--disable-test-page]\n");
+    printf("          [--enable-rtl-tcp|--disable-rtl-tcp]\n");
+    printf("          [--rtl-tcp-bind IPV4] [--rtl-tcp-port PORT]\n");
     printf("       %s [--config PATH] --check-config|--print-effective-config\n",
            program);
     printf("Default configuration: %s (optional when not explicitly named).\n",
@@ -323,13 +326,61 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
 }
 
 enum { MAX_IQ_CLIENTS = 4 };
-typedef struct iq_clients { int fd[MAX_IQ_CLIENTS]; } iq_clients;
+typedef struct iq_clients {
+    int fd[MAX_IQ_CLIENTS];
+    int rtl_fd;
+    uint32_t rtl_repeat;
+    uint8_t rtl_pending[FLEX1500_PUBLISHER_MAX_SAMPLES * 2 * 64];
+    size_t rtl_pending_length;
+    size_t rtl_pending_offset;
+} iq_clients;
 
 static flex1500_publish_result write_iq_clients(
     void *context, const uint8_t *bytes, size_t length, size_t *written)
 {
     iq_clients *clients = context;
     bool any = false;
+    if (clients->rtl_fd >= 0) {
+        if (clients->rtl_pending_length == 0) {
+            clients->rtl_pending_length = flex1500_rtl_tcp_encode_iq_repeated(
+                bytes, length, clients->rtl_repeat, clients->rtl_pending,
+                sizeof(clients->rtl_pending));
+            clients->rtl_pending_offset = 0;
+            if (clients->rtl_pending_length == 0) {
+                close(clients->rtl_fd);
+                clients->rtl_fd = -1;
+            }
+        }
+        if (clients->rtl_fd >= 0) {
+            size_t remaining = clients->rtl_pending_length -
+                               clients->rtl_pending_offset;
+            ssize_t result = send(
+                clients->rtl_fd,
+                clients->rtl_pending + clients->rtl_pending_offset,
+                remaining, MSG_NOSIGNAL | MSG_DONTWAIT);
+            if (result > 0) {
+                clients->rtl_pending_offset += (size_t)result;
+                if (clients->rtl_pending_offset < clients->rtl_pending_length) {
+                    *written = 0;
+                    return FLEX1500_PUBLISH_WOULD_BLOCK;
+                }
+                clients->rtl_pending_length = 0;
+                clients->rtl_pending_offset = 0;
+                any = true;
+            } else if (result < 0 &&
+                       (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                *written = 0;
+                return FLEX1500_PUBLISH_WOULD_BLOCK;
+            } else {
+                close(clients->rtl_fd);
+                clients->rtl_fd = -1;
+                clients->rtl_pending_length = 0;
+                clients->rtl_pending_offset = 0;
+                printf("[rtl_tcp] client disconnected while streaming\n");
+                fflush(stdout);
+            }
+        }
+    }
     for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i) {
         if (clients->fd[i] < 0) continue;
         ssize_t result = send(clients->fd[i], bytes, length,
@@ -630,7 +681,9 @@ static void daemon_tx_shutdown(flex1500_tx_control *tx_control,
 
 static int serve_live_rx_at(const char *bind_address, const char *port_text,
                             bool rx_tuning_enabled, bool test_page_enabled,
-                            bool transmit_enabled)
+                            bool transmit_enabled, bool rtl_tcp_enabled,
+                            const char *rtl_bind_address,
+                            const char *rtl_port_text)
 {
     unsigned long port;
     int listener = open_listener(bind_address, port_text, &port);
@@ -643,9 +696,24 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
         close(listener);
         return EXIT_FAILURE;
     }
+    unsigned long rtl_port = 0;
+    int rtl_listener = -1;
+    if (rtl_tcp_enabled) {
+        rtl_listener = open_listener(rtl_bind_address, rtl_port_text,
+                                     &rtl_port);
+        if (rtl_listener < 0 ||
+            fcntl(rtl_listener, F_SETFL,
+                  fcntl(rtl_listener, F_GETFL) | O_NONBLOCK) < 0) {
+            perror("open rtl_tcp listener");
+            if (rtl_listener >= 0) close(rtl_listener);
+            close(listener);
+            return EXIT_FAILURE;
+        }
+    }
 
     flex1500_iq_ring ring;
     if (!flex1500_iq_ring_init(&ring, RING_CAPACITY)) {
+        if (rtl_listener >= 0) close(rtl_listener);
         close(listener);
         return EXIT_FAILURE;
     }
@@ -655,6 +723,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
         !flex1500_iq_publisher_init(&publisher, &ring, 256)) {
         flex1500_usb_rx_destroy(receiver);
         flex1500_iq_ring_destroy(&ring);
+        if (rtl_listener >= 0) close(rtl_listener);
         close(listener);
         return EXIT_FAILURE;
     }
@@ -665,6 +734,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                 flex1500_usb_rx_last_error(receiver));
         flex1500_usb_rx_destroy(receiver);
         flex1500_iq_ring_destroy(&ring);
+        if (rtl_listener >= 0) close(rtl_listener);
         close(listener);
         return EXIT_FAILURE;
     }
@@ -674,6 +744,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                 flex1500_usb_rx_last_error(receiver));
         flex1500_usb_rx_destroy(receiver);
         flex1500_iq_ring_destroy(&ring);
+        if (rtl_listener >= 0) close(rtl_listener);
         close(listener);
         return EXIT_FAILURE;
     }
@@ -684,6 +755,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                     flex1500_usb_rx_last_error(receiver));
             flex1500_usb_rx_destroy(receiver);
             flex1500_iq_ring_destroy(&ring);
+            if (rtl_listener >= 0) close(rtl_listener);
             close(listener);
             return EXIT_FAILURE;
         }
@@ -700,8 +772,15 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
     printf("[startup] 5 W Tune API: %s%s\n",
            transmit_enabled ? "enabled" : "disabled",
            transmit_enabled ? " (LAN-accessible; unauthenticated)" : "");
+    printf("[startup] rtl_tcp RX compatibility: %s",
+           rtl_tcp_enabled ? "enabled" : "disabled");
+    if (rtl_tcp_enabled) printf(" on %s:%lu", rtl_bind_address, rtl_port);
+    putchar('\n');
     fflush(stdout);
-    iq_clients iq = {.fd = {-1, -1, -1, -1}};
+    iq_clients iq = {
+        .fd = {-1, -1, -1, -1}, .rtl_fd = -1, .rtl_repeat = 1,
+    };
+    flex1500_rtl_tcp_parser rtl_parser = {0};
     int tx_client = -1;
     http_client_state http_client = {.fd = -1};
     flex1500_api_controller api;
@@ -968,6 +1047,88 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
             }
         }
 
+        if (rtl_listener >= 0 && iq.rtl_fd < 0) {
+            int client = accept(rtl_listener, NULL, NULL);
+            if (client >= 0) {
+                uint8_t header[FLEX1500_RTL_TCP_HEADER_SIZE];
+                flex1500_rtl_tcp_header(header);
+                if (send_all(client, (const char *)header, sizeof(header)) != 0 ||
+                    fcntl(client, F_SETFL,
+                          fcntl(client, F_GETFL) | O_NONBLOCK) < 0) {
+                    close(client);
+                } else {
+                    iq.rtl_fd = client;
+                    iq.rtl_repeat = 1;
+                    iq.rtl_pending_length = 0;
+                    iq.rtl_pending_offset = 0;
+                    memset(&rtl_parser, 0, sizeof(rtl_parser));
+                    printf("[rtl_tcp] RX client connected\n");
+                    fflush(stdout);
+                }
+            }
+        }
+
+        if (iq.rtl_fd >= 0) {
+            uint8_t commands[256];
+            ssize_t received = recv(iq.rtl_fd, commands, sizeof(commands), 0);
+            if (received > 0) {
+                for (ssize_t i = 0; i < received; ++i) {
+                    flex1500_rtl_tcp_command command;
+                    if (!flex1500_rtl_tcp_parse_byte(
+                            &rtl_parser, commands[i], &command)) continue;
+                    if (command.id == FLEX1500_RTL_TCP_SET_FREQUENCY) {
+                        uint32_t filter = 0;
+                        if (!rx_tuning_enabled) {
+                            fprintf(stderr,
+                                    "[rtl_tcp] frequency %u rejected: RX tuning disabled\n",
+                                    command.parameter);
+                        } else if (tx_control.owner !=
+                                   FLEX1500_TX_OWNER_NONE) {
+                            fprintf(stderr,
+                                    "[rtl_tcp] frequency %u rejected: transmitter active\n",
+                                    command.parameter);
+                        } else if (station_owner.held) {
+                            fprintf(stderr,
+                                    "[rtl_tcp] frequency %u rejected: station controls owned by another client\n",
+                                    command.parameter);
+                        } else if (api_tune_rx(receiver, command.parameter,
+                                               &filter) == 0) {
+                            printf("[rtl_tcp] tuned RX to %u Hz; RX filter %u selected\n",
+                                   command.parameter, filter);
+                            fflush(stdout);
+                        } else {
+                            fprintf(stderr,
+                                    "[rtl_tcp] frequency %u rejected by radio policy\n",
+                                    command.parameter);
+                        }
+                    } else if (command.id ==
+                               FLEX1500_RTL_TCP_SET_SAMPLE_RATE) {
+                        if (command.parameter >= 48000 &&
+                            command.parameter <= 3072000 &&
+                            command.parameter % 48000 == 0) {
+                            iq.rtl_repeat = command.parameter / 48000;
+                            printf("[rtl_tcp] output rate set to %u sample/s by %ux compatibility upsampling; RF bandwidth remains 48000 Hz\n",
+                                   command.parameter, iq.rtl_repeat);
+                            fflush(stdout);
+                        } else {
+                            fprintf(stderr,
+                                    "[rtl_tcp] sample rate %u rejected; supported rates are integer multiples of 48000 through 3072000\n",
+                                    command.parameter);
+                        }
+                    }
+                }
+            } else if (received == 0 ||
+                       (received < 0 && errno != EAGAIN &&
+                        errno != EWOULDBLOCK)) {
+                close(iq.rtl_fd);
+                iq.rtl_fd = -1;
+                iq.rtl_pending_length = 0;
+                iq.rtl_pending_offset = 0;
+                printf("[rtl_tcp] RX client disconnected\n");
+                fflush(stdout);
+            }
+        }
+
         if (http_client.fd >= 0) {
             ssize_t received = recv(
                 http_client.fd, http_client.request + http_client.length,
@@ -1178,6 +1339,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
         bool have_iq_client = false;
         for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
             have_iq_client = have_iq_client || iq.fd[i] >= 0;
+        have_iq_client = have_iq_client || iq.rtl_fd >= 0;
         if (have_iq_client) {
             for (;;) {
                 flex1500_publish_result publish_result =
@@ -1198,6 +1360,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
 
     for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
         if (iq.fd[i] >= 0) close(iq.fd[i]);
+    if (iq.rtl_fd >= 0) close(iq.rtl_fd);
     if (tx_client >= 0) close(tx_client);
     if (http_client.fd >= 0) close(http_client.fd);
     if (!server_stop_requested) {
@@ -1243,6 +1406,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
     flex1500_usb_rx_destroy(receiver);
     flex1500_iq_ring_destroy(&ring);
     close(listener);
+    if (rtl_listener >= 0) close(rtl_listener);
     printf("[shutdown] receive daemon stopped\n");
     fflush(stdout);
     return server_stop_requested ? EXIT_SUCCESS : EXIT_FAILURE;
@@ -1252,7 +1416,8 @@ static int serve_live_rx(const char *port_text, bool rx_tuning_enabled,
                          bool test_page_enabled, bool transmit_enabled)
 {
     return serve_live_rx_at("0.0.0.0", port_text, rx_tuning_enabled,
-                            test_page_enabled, transmit_enabled);
+                            test_page_enabled, transmit_enabled, false,
+                            "0.0.0.0", "1234");
 }
 
 static int analyze_file(const char *path)
@@ -1546,7 +1711,11 @@ static bool is_configured_option(const char *argument)
            strcmp(argument, "--http-bind") == 0 ||
            strcmp(argument, "--http-port") == 0 ||
            strcmp(argument, "--enable-test-page") == 0 ||
-           strcmp(argument, "--disable-test-page") == 0;
+           strcmp(argument, "--disable-test-page") == 0 ||
+           strcmp(argument, "--enable-rtl-tcp") == 0 ||
+           strcmp(argument, "--disable-rtl-tcp") == 0 ||
+           strcmp(argument, "--rtl-tcp-bind") == 0 ||
+           strcmp(argument, "--rtl-tcp-port") == 0;
 }
 
 static bool configured_invocation(int argc, char **argv)
@@ -1618,6 +1787,10 @@ static int run_configured(int argc, char **argv)
             config.test_page_enabled = true;
         } else if (strcmp(option, "--disable-test-page") == 0) {
             config.test_page_enabled = false;
+        } else if (strcmp(option, "--enable-rtl-tcp") == 0) {
+            config.rtl_tcp_enabled = true;
+        } else if (strcmp(option, "--disable-rtl-tcp") == 0) {
+            config.rtl_tcp_enabled = false;
         } else if (strcmp(option, "--radio-mode") == 0) {
             if (++index >= argc ||
                 !flex1500_parse_radio_mode(argv[index], &config.radio_mode)) {
@@ -1639,6 +1812,21 @@ static int run_configured(int argc, char **argv)
                       stderr);
                 return EXIT_FAILURE;
             }
+        } else if (strcmp(option, "--rtl-tcp-bind") == 0) {
+            if (++index >= argc || strlen(argv[index]) == 0 ||
+                strlen(argv[index]) >= sizeof(config.rtl_tcp_bind)) {
+                fputs("--rtl-tcp-bind requires a numeric IPv4 address\n",
+                      stderr);
+                return EXIT_FAILURE;
+            }
+            strcpy(config.rtl_tcp_bind, argv[index]);
+        } else if (strcmp(option, "--rtl-tcp-port") == 0) {
+            if (++index >= argc ||
+                !valid_port_text(argv[index], &config.rtl_tcp_port)) {
+                fputs("--rtl-tcp-port requires a value from 1 through 65535\n",
+                      stderr);
+                return EXIT_FAILURE;
+            }
         } else {
             fprintf(stderr, "Unknown configured-daemon option: %s\n", option);
             return EXIT_FAILURE;
@@ -1648,6 +1836,11 @@ static int run_configured(int argc, char **argv)
     struct in_addr parsed_address;
     if (inet_pton(AF_INET, config.http_bind, &parsed_address) != 1) {
         fprintf(stderr, "Invalid IPv4 bind address: %s\n", config.http_bind);
+        return EXIT_FAILURE;
+    }
+    if (inet_pton(AF_INET, config.rtl_tcp_bind, &parsed_address) != 1) {
+        fprintf(stderr, "Invalid rtl_tcp IPv4 bind address: %s\n",
+                config.rtl_tcp_bind);
         return EXIT_FAILURE;
     }
     if (print_config) flex1500_config_print(&config, path);
@@ -1661,7 +1854,10 @@ static int run_configured(int argc, char **argv)
     }
 
     char port[6];
+    char rtl_port[6];
     snprintf(port, sizeof(port), "%u", (unsigned int)config.http_port);
+    snprintf(rtl_port, sizeof(rtl_port), "%u",
+             (unsigned int)config.rtl_tcp_port);
     printf("[config] loaded %s; effective radio mode=%s, test-page=%s\n",
            path, flex1500_radio_mode_name(config.radio_mode),
            config.test_page_enabled ? "enabled" : "disabled");
@@ -1675,7 +1871,8 @@ static int run_configured(int argc, char **argv)
         config.radio_mode == FLEX1500_RADIO_RX_TUNING ||
             config.radio_mode == FLEX1500_RADIO_TRANSMIT,
         config.test_page_enabled,
-        config.radio_mode == FLEX1500_RADIO_TRANSMIT);
+        config.radio_mode == FLEX1500_RADIO_TRANSMIT,
+        config.rtl_tcp_enabled, config.rtl_tcp_bind, rtl_port);
 }
 
 int main(int argc, char **argv)

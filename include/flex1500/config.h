@@ -22,6 +22,9 @@ typedef struct flex1500_config {
     char http_bind[64];
     uint16_t http_port;
     bool test_page_enabled;
+    bool rtl_tcp_enabled;
+    char rtl_tcp_bind[64];
+    uint16_t rtl_tcp_port;
 } flex1500_config;
 
 void flex1500_config_defaults(flex1500_config *config);

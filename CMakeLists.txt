@@ -64,6 +64,9 @@ install(FILES 70-flex1500.rules
 install(FILES README.md RELEASE_NOTES.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR}
 )
+install(FILES docs/CONFIGURATION.md docs/SYSTEMD_SERVICE.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+)
 install(FILES LICENSE
     DESTINATION ${CMAKE_INSTALL_DOCDIR}
     RENAME copyright
@@ -80,6 +83,13 @@ set(CPACK_DEBIAN_PACKAGE_MAINTAINER
 set(CPACK_DEBIAN_PACKAGE_SECTION "hamradio")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)
+set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/conffiles"
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst"
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/prerm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm"
+)
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 execute_process(
     COMMAND dpkg --print-architecture
@@ -171,6 +181,9 @@ install(TARGETS flex1500d
 )
 install(FILES flex1500d.conf
     DESTINATION /etc/flex1500d
+)
+install(FILES packaging/flex1500d.service
+    DESTINATION lib/systemd/system
 )
 
 add_executable(flex1500-status-probe src/flex1500_status_probe.c)
@@ -382,6 +395,10 @@ if(BUILD_TESTING)
         COMMAND flex1500d --config ${CMAKE_CURRENT_SOURCE_DIR}/flex1500d.conf
                 --no-daemon --http-port 16000 --disable-test-page
                 --print-effective-config)
+    add_test(NAME systemd-service-validation
+        COMMAND ${CMAKE_COMMAND}
+                -DSERVICE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/packaging/flex1500d.service
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/validate_systemd_service.cmake)
     add_executable(rtl-tcp-test tests/rtl_tcp_test.c)
     target_link_libraries(rtl-tcp-test PRIVATE flex1500_protocol)
     target_compile_options(rtl-tcp-test PRIVATE -Wall -Wextra -Wpedantic)

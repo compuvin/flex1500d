@@ -82,4 +82,16 @@ stored in this file.
 The experimental receive-only [`rtl_tcp` compatibility listener](RTL_TCP.md)
 is independently controlled by its section and remains disabled by default.
 
+## systemd service
+
+The Debian package installs `flex1500d.service`, enables it for subsequent
+boots, and leaves it stopped during installation. The service reads this
+configuration file and does not add a radio-mode override, so the packaged
+`rx-tuning` receive-only default remains authoritative. Review and validate any
+configuration change before restarting the service, especially before setting
+`mode=transmit`.
+
+See the [systemd service guide](SYSTEMD_SERVICE.md) for service commands, logs,
+failure recovery, and package behavior.
+
 The earlier exact mode commands remain supported for scripts and testing.

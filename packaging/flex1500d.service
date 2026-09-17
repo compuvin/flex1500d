@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+[Unit]
+Description=FLEX-1500 network SDR daemon
+Documentation=https://github.com/compuvin/flex1500d
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/flex1500d --config /etc/flex1500d/flex1500d.conf
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

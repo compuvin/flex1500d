@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+set -e
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [ "$1" = "configure" ] && [ -z "${2:-}" ]; then
+        systemctl enable flex1500d.service >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

@@ -32,7 +32,7 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
   LSB, and CW.
 - [x] Make receive operation dependable enough for regular station use,
   including clearer diagnostics and recovery after errors or disconnects.
-- [ ] Package `flex1500d` as a proper Linux background service that can start
+- [x] Package `flex1500d` as a proper Linux background service that can start
   automatically and shut the radio down cleanly.
 - [x] Expose the API to other computers on a trusted local network, turning a
   USB-connected FLEX-1500 into a practical network-accessible SDR.
@@ -148,8 +148,9 @@ does not modify the project goals above.
 - The initial SoapySDR adapter has been validated with live radio data and SDR
   Oxide, but broader application compatibility still needs testing; there is
   no Hamlib or other adapter yet.
-- There is no installer, systemd unit, or background-service configuration;
-  the daemon currently runs in the foreground.
+- The Debian package installs and enables a systemd service for the next boot,
+  but deliberately does not start it during package installation. Source-tree
+  commands continue to run in the foreground.
 - Transmit remains experimental and is unavailable in normal receive-only
   daemon modes. The explicitly transmit-enabled mode supports the paths and
   limitations listed in the [transmit operator guide](docs/TX_OPERATOR_GUIDE.md).
@@ -177,10 +178,13 @@ downloaded package and its declared dependencies with:
 sudo apt install ./flex1500d_0.2.1_amd64.deb
 ```
 
-The package installs `flex1500d`, the SoapySDR module, the udev access rule,
-and project documentation. It does not install or start a systemd service.
-Unplug and reconnect the FLEX-1500 after installation so the new udev rule is
-applied. Remove the package with `sudo apt remove flex1500d`.
+The package installs `flex1500d`, the SoapySDR module, the udev access rule, a
+default receive-only configuration, a systemd service, and project
+documentation. It enables the service for the next boot but deliberately does
+not start it during installation. Unplug and reconnect the FLEX-1500 after
+installation so the new udev rule is applied. See the
+[systemd service guide](docs/SYSTEMD_SERVICE.md) before starting it. Remove the
+package with `sudo apt remove flex1500d`.
 
 The package is built for the Ubuntu version used to create the release and may
 not run on older Debian-family systems whose glibc or SoapySDR ABI differs.
@@ -303,6 +307,11 @@ Both commands listen on TCP port 15000 on all IPv4 interfaces. No machine-
 specific address is required, which keeps a future service definition portable.
 Stop the foreground daemon with Ctrl+C. They do not install or start a system
 service.
+
+For an installed package, systemd can start and supervise the same configured
+daemon. The service is enabled for future boots without being started during
+installation. Its commands, logs, configuration workflow, and receive-only
+default are documented in the [systemd service guide](docs/SYSTEMD_SERVICE.md).
 
 The validated capture-matched 5 W Tune API is included only in the transmit-
 enabled command above. See [the Tune safety design](docs/TUNE_API_DESIGN.md).

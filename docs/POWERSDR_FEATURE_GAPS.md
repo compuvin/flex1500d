@@ -18,22 +18,26 @@ An item should be checked only after its intended ownership behavior is clear,
 the implementation and API are documented, and relevant offline and live tests
 have passed.
 
+Checklist scope labels indicate where an item would most naturally belong:
+`(daemon)` means `flex1500d` and its API, `(client)` means a possible future
+companion bridge or another compatible client application, and
+`(daemon+client)` means coordinated work on both sides. A client label records
+an architectural boundary only; it is not a promise that this project will
+develop or distribute that client software.
+
 ## Receiver DSP and metering
 
 - [ ] Add selectable receive AGC modes such as off, fast, medium, slow, and
-  long, with sensible mode-specific defaults.
-- [ ] Expose useful AGC parameters such as threshold, decay, hang, and maximum
-  gain without making ordinary operation require manual DSP tuning.
+  long, with sensible mode-specific defaults. (client)
+  Threshold, decay, hang, and maximum gain should initially remain tested
+  internal parameters of those modes rather than ordinary exposed controls.
+  Advanced adjustment can be reconsidered if a demonstrated use requires it.
 - [ ] Add calibrated or characterized signal-strength reporting suitable for
-  an S-meter and squelch decisions.
+  an S-meter and squelch decisions. (daemon+client)
 - [ ] Add impulse-noise blanking with controls appropriate to the FLEX-1500's
-  48 kHz I/Q stream.
-- [ ] Add optional DSP noise reduction and automatic-notch filtering.
-- [ ] Add one or more adjustable manual notch filters.
+  48 kHz I/Q stream. (client)
 - [ ] Add filter shift or passband tuning in addition to the implemented mode
-  and bandwidth controls.
-- [ ] Add optional receive equalization and per-client audio gain, mute, and
-  balance controls where those are not better left entirely to the client.
+  and bandwidth controls. (client)
 
 Per-listener audio DSP should remain independent when practical. One listener's
 noise reduction, notch filters, volume, or mute selection should not change
@@ -42,16 +46,12 @@ another listener's audio or retune the physical radio.
 ## Frequency and operating state
 
 - [ ] Add RIT so the controlling station can offset receive without changing
-  the transmit frequency.
+  the transmit frequency. (daemon+client)
 - [ ] Add XIT so the controlling station can offset transmit without changing
-  the receive frequency.
+  the receive frequency. (daemon+client)
 - [ ] Add reviewed split-frequency operation with distinct RX and TX
   frequencies, ownership enforcement, amateur-band validation, and safe state
-  restoration.
-- [ ] Define a VFO A/B-style API model only if it makes common clients easier
-  to integrate; avoid duplicating desktop UI state without a practical use.
-- [ ] Add frequency step and lock semantics useful to hardware controllers and
-  rig-control clients.
+  restoration. (daemon+client)
 
 Any operation that changes the FLEX-1500's physical center frequency, RF
 filter, or transmit frequency remains restricted to the station owner.
@@ -61,62 +61,46 @@ owner.
 ## Transmit audio and operating aids
 
 - [ ] Add adjustable transmit filter low and high edges with safe defaults for
-  each supported emission mode.
-- [ ] Add a transmit equalizer or documented external-processing path.
-- [ ] Expand speech processing beyond the current on/off compressor control
-  where additional parameters have a demonstrated operator benefit.
-- [ ] Add VOX with threshold, delay, anti-VOX behavior, ownership integration,
-  the configured maximum-key timer, and guaranteed unkey cleanup.
-- [ ] Add named microphone and transmit profiles without allowing a profile to
-  bypass drive limits, band validation, or TX interlocks.
-- [ ] Define local transmit-monitor audio without feeding transmitted audio
-  back into the normal shared receive stream.
+  each supported emission mode. (daemon+client)
 
 These are software features and do not imply that the radio supplies forward
 power, reflected power, SWR, PA temperature, or hardware ALC telemetry.
 
 ## Memories and persistent profiles
 
-- [ ] Add named memories containing frequency, mode, filter, gain, squelch, and
-  other useful receive state.
-- [ ] Add band-stack memories with multiple commonly used settings per amateur
-  band.
-- [ ] Add import, export, and backup for memories and profiles using a stable,
-  documented format.
-- [ ] Define which settings are global station state, owner state, or
-  per-listener preferences before persisting them.
+Memories, band stacks, favorites, operating profiles, and their import/export
+are intentionally outside this project. Neither `flex1500d` nor the companion
+bridge stores or manages them. Established applications may provide those
+features and recall settings through ordinary, ownership-aware rig control.
 
-Recalling a memory that physically retunes the radio must require station
-ownership. Merely browsing memories should remain read-only.
+The daemon persists only service configuration and safety policy. Any external
+application request that physically retunes the radio remains subject to
+station ownership.
 
 ## Recording, playback, and automation
 
-- [ ] Document a recommended client-side method for recording demodulated
-  audio from the API.
+- [x] Document a recommended client-side method for recording demodulated
+  audio from the API. (See the
+  [companion client design](COMPANION_CLIENT_DESIGN.md).) (client)
 - [x] Document a recommended client-side method for recording and replaying raw
   I/Q, including sample format and metadata needed for correct tuning. (See the
   [raw I/Q interoperability guide](RAW_IQ_INTEROPERABILITY.md).)
-- [ ] Decide whether unattended server-side audio or I/Q recording is useful
-  enough to justify storage management and an additional API.
-- [ ] Design scanning as an API client or automation service using memories,
-  squelch state, and the station-control lease rather than embedding UI policy
-  in the USB layer.
-- [ ] Consider scheduled recording only after ownership, storage limits, and
-  behavior across radio or client disconnects are defined.
+  (daemon+client)
 
 ## Integration with established station software
 
 - [ ] Add or document a Hamlib-compatible rig-control bridge for logging,
-  contest, and digital-mode applications.
+  contest, and digital-mode applications. (client)
 - [ ] Evaluate whether a limited CAT compatibility layer would materially
   improve support for software that cannot use Hamlib, SoapySDR, or the native
-  HTTP API.
+  HTTP API. (client)
 - [ ] Document PipeWire or PulseAudio integration as the Linux equivalent of
-  PowerSDR's Virtual Audio Cable workflow.
+  PowerSDR's Virtual Audio Cable workflow. (client)
 - [ ] Document representative digital-mode operation with external software;
   modulation, decoding, logging, and message automation remain client duties.
+  (daemon+client)
 - [ ] Test additional established SDR applications for receive, transmit, and
-  station-ownership interoperability.
+  station-ownership interoperability. (daemon+client)
 
 ## Features intentionally left to clients
 

@@ -88,3 +88,33 @@ configuration through normal Debian conffile handling. Removing the package
 stops and disables the unit before its files are removed. A source-tree build
 installs the unit with `cmake --install`, but automatic enablement is specific
 to the Debian package's maintainer scripts.
+
+## Isolated package validation
+
+The repository includes an automated lifecycle test that uses `dpkg` under
+`fakeroot` with a temporary alternate root. A simulated `systemctl` changes
+only the temporary root and refuses every attempt to start a service. The test
+verifies:
+
+- initial installation requests boot enablement without starting the daemon;
+- the binary, receive-only configuration, service unit, and enablement link are
+  installed in their expected locations;
+- an upgrade preserves a locally modified conffile and does not re-enable a
+  service that the operator disabled;
+- package removal requests a stop/disable operation and removes program files
+  while normal Debian conffile retention keeps the local configuration; and
+- package purge removes the retained configuration.
+
+After generating a package, run the test without root privileges:
+
+```sh
+tests/debian_package_lifecycle.sh ./flex1500d_0.2.1_amd64.deb
+```
+
+This optional developer test requires the standard Debian package tools and
+`fakeroot`; neither is a runtime requirement for an installed `flex1500d`
+package. GitHub Actions installs `fakeroot` only in its temporary build runner.
+
+The test does not open USB, access the FLEX-1500, install anything on the host,
+or communicate with the host systemd instance. GitHub Actions runs it for each
+native build architecture.

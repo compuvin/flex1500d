@@ -36,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes build-essential cmake pkg-config \
-            libusb-1.0-0-dev libsoapysdr-dev soapysdr-tools
+            fakeroot libusb-1.0-0-dev libsoapysdr-dev soapysdr-tools
 
       - name: Configure
         run: >-
@@ -52,3 +52,11 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Build Debian package
+        run: cpack --config build/CPackConfig.cmake -G DEB
+
+      - name: Test Debian package lifecycle
+        run: |
+          package=$(find . -maxdepth 1 -name 'flex1500d_*.deb' -print -quit)
+          tests/debian_package_lifecycle.sh "$package"

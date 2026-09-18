@@ -7,8 +7,9 @@
 > PowerSDR. Back up expectations accordingly and review the hardware-safety
 > documentation before allowing any program to open the radio.
 
-`flex1500d` turns a FLEX-1500 USB software-defined radio into a receive-only
-IQ source exposed through a local network API:
+`flex1500d` turns a FLEX-1500 USB software-defined radio into a network SDR
+exposed through a local API. It defaults to receive-only operation; separately
+enabled transmit support remains experimental:
 
 ```text
 FLEX-1500 -> libusb -> flex1500d -> HTTP/IQ API -> SDR client
@@ -16,8 +17,8 @@ FLEX-1500 -> libusb -> flex1500d -> HTTP/IQ API -> SDR client
 
 The current daemon receives 48 kHz complex I/Q, tunes from 100 kHz through
 54 MHz, selects the mapped hardware RX filter, reports detailed USB/stream
-status, and serves one IQ client. An opt-in browser test page provides AM, FM,
-USB, LSB, and CW audio.
+status, and serves as many as four simultaneous IQ clients. An opt-in browser
+test page provides AM, FM, USB, LSB, and CW audio.
 
 ## Project goals
 
@@ -53,7 +54,7 @@ Windows, Wine, or a virtual machine. This checklist is the working roadmap:
   and [PowerSDR software feature gaps](docs/POWERSDR_FEATURE_GAPS.md).)
 - [x] Keep transmit disabled in the current daemon and API while preserving
   the isolated experimental findings for future research.
-- [ ] Before considering any future daemon transmit support, thoroughly
+- [x] Before considering any future daemon transmit support, thoroughly
   understand and independently review its RF behavior, interlocks, failure
   handling, and safe unkeying.
 
@@ -78,8 +79,8 @@ requirements for the daemon's initial release or normal network-SDR use:
 
 ## Important safety boundary
 
-The basic `--initialize-radio` daemon mode and the current SoapySDR adapter
-remain receive-only:
+The basic `--initialize-radio` mode and the configured `receive` and
+`rx-tuning` daemon modes remain receive-only:
 
 - no PTT or MOX route;
 - no general TX sample-stream endpoint;
@@ -87,16 +88,20 @@ remain receive-only:
 - `GET /v1/radio` normally reports `transmit_enabled: false`; and
 - representative TX/PTT requests are tested to return 404.
 
-Transmit operations are exposed only by the distinct
-`--initialize-radio-and-enable-transmit` live mode. The validated fixed Tune
-carrier and physical microphone path share an exclusive owner with the new
+The SoapySDR adapter follows the daemon's capability boundary: it exposes
+receive normally and exposes one TX channel only to the station owner when it
+connects to an explicitly transmit-enabled daemon.
+
+Transmit operations are exposed only by configured `mode=transmit` or the
+legacy `--initialize-radio-and-enable-transmit` live mode. The validated fixed
+Tune carrier and physical microphone path share an exclusive owner with the
 HTTP PCM-audio and complex-I/Q TX sessions. Network TX adds prebuffer, lease,
 sample-data, maximum-key, disconnect, and cleanup watchdogs. HTTP PCM audio and
 raw I/Q have completed bounded live dummy-load tests; individual modes, bands,
 and applications still require the validation tracked in the engineering
-checklist. The interlocks and leases are safety
-mechanisms, not security credentials. Use a suitable matched antenna system or
-50-ohm dummy load and follow normal RF exposure and station-control practices.
+checklist. The interlocks and leases are safety mechanisms, not security
+credentials. Use a suitable matched antenna system or 50-ohm dummy load and
+follow normal RF exposure and station-control practices.
 
 The standard build includes standalone transmit-research executables for
 protocol documentation and reproducibility. They are never called by the
@@ -122,14 +127,16 @@ does not modify the project goals above.
 - Receive-only 48 kHz complex-I/Q streaming
 - RX frequency and hardware-filter control from 100 kHz to 54 MHz
 - HTTP/IQ API on TCP port 15000, available to local and trusted-LAN clients
-- LAN-accessible 5 W Tune API in the tuning-enabled daemon, with lease/watchdog cleanup
+- LAN-accessible 5 W Tune API in the transmit-enabled daemon, with
+  lease/watchdog cleanup
 - Versioned binary `F15I` IQ framing
 - Detailed USB, sample, ring-buffer, network, and tuning counters
 - Offline IQ inspection, framing, AM/FM/USB/LSB demodulation, and WAV output
 - Opt-in browser operator page with AM, FM, USB, LSB, and CW receive audio;
   transmit-enabled mode adds Tune, TX settings, and local-computer microphone
   controls
-- Receive-only SoapySDR adapter for established SDR applications
+- Conditional RX/TX SoapySDR adapter for established SDR applications; TX is
+  exposed only to the station owner when the daemon is transmit-enabled
 - Guarded hardware probes that remain offline unless given an exact execution
   argument
 
@@ -138,7 +145,8 @@ does not modify the project goals above.
 - Only the FLEX-1500 hardware and firmware listed above have been tested.
 - The API accepts trusted-LAN connections but has no authentication or
   transport encryption; it must not be exposed to an untrusted network.
-- Only one IQ stream client is supported at a time.
+- As many as four IQ stream clients are supported at a time; they share one
+  physical center frequency and 48 kHz RF window.
 - The browser page is a development harness, not the long-term user interface.
   Computer-microphone TX requires a secure browser context, so plain HTTP works
   on `localhost` but not normally from another LAN computer.
@@ -201,7 +209,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The clean default configuration currently runs 48 offline tests. Building and
+The clean default configuration currently runs 53 offline tests. Building and
 testing does not enumerate, open, initialize, tune, or otherwise access the
 radio.
 
@@ -217,7 +225,10 @@ See [the SoapySDR adapter guide](docs/SOAPYSDR.md).
 > run `sudo cmake --install build`, verify the loaded module as described in
 > the adapter guide, and then reopen the application. Restart a running daemon
 > whenever its executable was rebuilt. A live Soapy test is not considered
-> valid until the build and installed module have been verified to match.
+> valid until the build and installed module have been verified to match. The
+> default source install prefix is `/usr/local`; it does not enable or start
+> the Debian package's `/usr/bin/flex1500d` systemd service. Use the `.deb` for
+> the documented background-service workflow.
 
 SoapySDR can be explicitly omitted for a constrained or daemon-only build with
 `-DFLEX1500_BUILD_SOAPYSDR=OFF`; it is included and required by default.
@@ -262,25 +273,39 @@ Unplug and reconnect the radio again after removal. Additional details are in
 Live commands open and initialize the radio and therefore change radio state.
 Review the command and ensure no other program owns the FLEX-1500 first.
 
-Installed packages automatically provide `/etc/flex1500d/flex1500d.conf`.
-Its default starts RX with frequency tuning enabled while leaving transmit and
-the browser test page disabled. The same RX-only defaults apply if that file is
-absent, so normal foreground startup is simply:
+Installed packages provide `/etc/flex1500d/flex1500d.conf`. Its default starts
+RX with frequency tuning enabled while leaving transmit and the browser test
+page disabled. Start the installed, already-enabled systemd service with:
 
 ```sh
-flex1500d
+sudo systemctl start flex1500d
+sudo systemctl status flex1500d
 ```
 
-The default path can be replaced with `--config PATH`, and individual values
-can be overridden on the command line. Use `--check-config` or
-`--print-effective-config` to inspect configuration without opening the radio.
-See the [configuration reference](docs/CONFIGURATION.md).
+If it is not started manually, it starts at the next normal boot. See the
+[systemd service guide](docs/SYSTEMD_SERVICE.md) for logs, shutdown, restart,
+and configuration procedures.
+
+For a foreground source-tree run using the version-controlled receive-only
+configuration:
+
+```sh
+./build/flex1500d --config ./flex1500d.conf
+```
+
+Stop a foreground daemon with Ctrl+C. The default configuration path can be
+replaced with `--config PATH`, and individual settings can be overridden on the
+command line. Use `--check-config` or `--print-effective-config` to inspect the
+effective configuration without opening the radio. See the
+[configuration reference](docs/CONFIGURATION.md).
 
 An experimental receive-only [`rtl_tcp` compatibility listener](docs/RTL_TCP.md)
 is available for clients without the project Soapy adapter. It is disabled by
 default and uses the FLEX-1500's fixed 48 ksample/s bandwidth.
 
-The legacy exact mode commands remain available:
+The earlier exact-mode commands remain supported for compatibility with old
+scripts and research notes, but new usage should prefer configuration files or
+the equivalent `--radio-mode` override:
 
 Initialization and receive streaming without API tuning:
 
@@ -303,19 +328,13 @@ carrier:
   --initialize-radio-and-enable-transmit
 ```
 
-Both commands listen on TCP port 15000 on all IPv4 interfaces. No machine-
-specific address is required, which keeps a future service definition portable.
-Stop the foreground daemon with Ctrl+C. They do not install or start a system
+All three compatibility commands listen on TCP port 15000 on all IPv4
+interfaces. They run in the foreground and do not install or start a system
 service.
 
-For an installed package, systemd can start and supervise the same configured
-daemon. The service is enabled for future boots without being started during
-installation. Its commands, logs, configuration workflow, and receive-only
-default are documented in the [systemd service guide](docs/SYSTEMD_SERVICE.md).
-
 The validated capture-matched 5 W Tune API is included only in the transmit-
-enabled command above. See [the Tune safety design](docs/TUNE_API_DESIGN.md).
-The command and Tune lease are not authentication mechanisms.
+Configured operation exposes the same Tune API only when `mode=transmit`; the
+command and Tune lease are not authentication mechanisms.
 
 > **LAN security:** API version 1 currently has no authentication or transport
 > encryption. Permit port 15000 only from trusted local hosts using the daemon
@@ -325,12 +344,11 @@ The command and Tune lease are not authentication mechanisms.
 
 ## Browser receive test
 
-Start the tuning-enabled daemon with the separately opt-in test page:
+For a foreground source-tree test, enable the page while retaining the
+configuration's receive-only `rx-tuning` mode:
 
 ```sh
-./build/flex1500d --serve-live-rx 15000 \
-  --initialize-radio-and-enable-rx-tuning \
-  --enable-test-page
+./build/flex1500d --config ./flex1500d.conf --enable-test-page
 ```
 
 Then open:
@@ -339,14 +357,17 @@ Then open:
 http://DAEMON_HOST:15000/test
 ```
 
-The page consumes only the public API. It does not access USB directly and
-contains no TX/PTT control. Tuning keeps browser audio connected. See
-[the browser test-page documentation](docs/WEB_TEST_UI.md).
+The page consumes only the public API and never accesses USB directly. In
+receive-only modes its Tune and TX operations are unavailable. When the daemon
+is deliberately configured with `mode=transmit`, the page also exposes Tune,
+TX settings, and local-computer microphone controls. Tuning keeps browser audio
+connected. See [the browser test-page documentation](docs/WEB_TEST_UI.md).
 
 The page can be served without opening a radio for UI testing:
 
 ```sh
-./build/flex1500d --serve-offline 15001 --enable-test-page
+./build/flex1500d --config ./flex1500d.conf \
+  --radio-mode offline --http-port 15001 --enable-test-page
 ```
 
 ## API summary
@@ -385,10 +406,12 @@ owner's 48 kHz IQ window without retuning the radio. Physical microphone PTT
 remains the reviewed local-priority exception and acts through the current
 station configuration without revoking the network station owner.
 
-Frequency control is available only with the exact tuning-enabled daemon
-command. Mode selection is host-side state and does not send a mode command to
-the radio. The complete response schema and `F15I` framing are documented in
-[the network API reference](docs/NETWORK_API.md).
+Physical frequency control is available when the effective radio mode is
+`rx-tuning` or `transmit`; a non-owner remains limited to virtual tuning within
+the station owner's 48 kHz I/Q window. Mode selection is host-side state and
+does not send a demodulation-mode command to the radio. The complete response
+schema and `F15I` framing are documented in the
+[network API reference](docs/NETWORK_API.md).
 
 ## Offline processing
 
@@ -419,19 +442,33 @@ cmake -S . -B build -DFLEX1500_BUILD_TX_RESEARCH=OFF
 The probes retain their exact execution strings to reduce accidental use, but
 those strings are not security controls. Building a probe does not execute it.
 
-The daemon's live-tested transmit feature is the capture-matched nominal 5 W
-Tune carrier in `--initialize-radio-and-enable-transmit` mode. That mode also
-provides receive streaming and controls, prepares the TX amplifier path, and
-keeps the PA filter mapped to the known frequency. Physical microphone PTT and
-continuous USB/LSB modulation are now connected to the reviewed ownership and
-cleanup path. Repeated USB voice tests into a dummy load validated natural
+The daemon's live-tested transmit features require configured
+`mode=transmit`, or its legacy `--initialize-radio-and-enable-transmit`
+equivalent. This includes the capture-matched nominal 5 W Tune carrier. The
+mode also provides receive streaming and controls, prepares the TX amplifier
+path, and keeps the PA filter mapped to the known frequency. Physical
+microphone PTT and continuous USB/LSB modulation are now connected to the
+reviewed ownership and cleanup path. Repeated USB voice tests into a dummy load
+validated natural
 audio, adequate subjective level, reliable PTT, unkey, and RX restoration;
 calibrated modulation/ALC measurement and live LSB validation remain open.
-Physical and HTTP PTT are rejected unless TX mode is enabled, startup/recovery has
-established an unkeyed prepared state, the frequency is known and permitted by
-the daemon's band policy, and the selected profile is valid. HTTP TX accepts
-USB/LSB PCM audio or guarded raw complex I/Q. SoapySDR transmit remains
-unavailable until the adapter is connected to this API.
+Physical and HTTP PTT are rejected unless TX mode is enabled, startup/recovery
+has established an unkeyed prepared state, the frequency is known and
+permitted by the daemon's band policy, and the selected profile is valid. HTTP
+TX accepts USB/LSB PCM audio or guarded raw complex I/Q. The SoapySDR adapter
+maps its TX stream to the same leased raw-I/Q API and exposes TX only to the
+station owner when the connected daemon reports transmit enabled.
+
+For a deliberate foreground transmit-enabled source-tree run with the browser
+test page:
+
+```sh
+./build/flex1500d --config ./flex1500d.conf \
+  --radio-mode transmit --enable-test-page
+```
+
+This command changes radio state and enables transmit facilities. Review the
+transmit operator guide and ensure the station is safe before running it.
 
 Transmit mode and all standalone TX probes are experimental, intended for
 testing, and used entirely at the operator's own risk. The operator is

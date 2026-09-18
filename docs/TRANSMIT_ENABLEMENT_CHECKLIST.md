@@ -42,9 +42,13 @@ transmit support.
   filter-bandwidth changes for every active TX owner. Nothing is implicitly
   staged: unkey, apply the setting, and key again. Host-only receive squelch is
   explicitly safe to change.
-- [ ] Ensure every error, disconnect, signal, timeout, and shutdown path
+- [x] Ensure every error, disconnect, signal, timeout, and shutdown path
   attempts transition mute, `SET_TR(0)`, receive-frequency restoration, and
   safe PA state.
+
+The offline path audit and composed failure tests are recorded in the
+[transmit termination and cleanup matrix](TX_TERMINATION_MATRIX.md). Separate
+live USB-disconnect and transmitting-fault validation remains open below.
 - [ ] Independently review the complete key, modulate, and guaranteed-unkey
   state machine before connecting physical microphone PTT or general transmit
   control to the daemon or API.

@@ -209,7 +209,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The clean default configuration currently runs 53 offline tests. Building and
+The clean default configuration currently runs 54 offline tests. Building and
 testing does not enumerate, open, initialize, tune, or otherwise access the
 radio.
 

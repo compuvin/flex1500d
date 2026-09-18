@@ -506,6 +506,14 @@ if(BUILD_TESTING)
         -Wall -Wextra -Wpedantic)
     add_test(NAME tx-failure-injection-offline
         COMMAND tx-failure-injection-test)
+    add_executable(tx-termination-matrix-test
+        tests/tx_termination_matrix_test.c)
+    target_link_libraries(tx-termination-matrix-test PRIVATE
+        flex1500_usb_rx)
+    target_compile_options(tx-termination-matrix-test PRIVATE
+        -Wall -Wextra -Wpedantic)
+    add_test(NAME tx-termination-matrix-offline
+        COMMAND tx-termination-matrix-test)
 
     add_executable(network-protocol-test tests/network_protocol_test.c)
     target_link_libraries(network-protocol-test PRIVATE flex1500_protocol)

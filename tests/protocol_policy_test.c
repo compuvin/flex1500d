@@ -42,6 +42,10 @@ int main(void)
         0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xfe, 0x00, 0x00,
         0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
+    const uint8_t expected_main_tx_antenna[FLEX1500_COMMAND_PACKET_SIZE] = {
+        0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xff, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
     uint8_t rx_control_request[FLEX1500_COMMAND_PACKET_SIZE];
     const uint8_t expected_pa_filter_5[FLEX1500_COMMAND_PACKET_SIZE] = {
         0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xec, 0x00, 0x00,
@@ -153,6 +157,10 @@ int main(void)
                  sizeof(rx_control_request)) == 0);
     CHECK(!flex1500_build_rx_antenna_request(
         15, (flex1500_rx_antenna)3, rx_control_request));
+    CHECK(flex1500_build_main_tx_antenna_request(16, rx_control_request));
+    CHECK(memcmp(rx_control_request, expected_main_tx_antenna,
+                 sizeof(rx_control_request)) == 0);
+    CHECK(!flex1500_build_main_tx_antenna_request(16, NULL));
     CHECK(flex1500_rx_filter_for_frequency(100000, &selected_filter));
     CHECK(selected_filter == 0);
     CHECK(flex1500_rx_filter_for_frequency(479999, &selected_filter));

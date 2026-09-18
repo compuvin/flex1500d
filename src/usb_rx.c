@@ -855,6 +855,13 @@ int flex1500_usb_rx_enable_transmit_preparation(flex1500_usb_rx *receiver)
         receiver->transmit_prepared) {
         return LIBUSB_ERROR_INVALID_PARAM;
     }
+    if (!flex1500_build_main_tx_antenna_request(
+            receiver->next_command_index++, packet)) {
+        return LIBUSB_ERROR_INVALID_PARAM;
+    }
+    int result = send_rx_command(receiver, packet,
+                                 "prepare TX SET_TX_ANT(0)");
+    if (result != LIBUSB_SUCCESS) return result;
     if (receiver->frequency_known) {
         uint32_t filter;
         if (!flex1500_pa_filter_for_frequency(receiver->frequency_hz,
@@ -863,8 +870,8 @@ int flex1500_usb_rx_enable_transmit_preparation(flex1500_usb_rx *receiver)
                 receiver->next_command_index++, filter, packet)) {
             return LIBUSB_ERROR_INVALID_PARAM;
         }
-        int result = send_rx_command(receiver, packet,
-                                     "prepare TX SET_PA_FILTER");
+        result = send_rx_command(receiver, packet,
+                                 "prepare TX SET_PA_FILTER");
         if (result != LIBUSB_SUCCESS) return result;
         receiver->pa_filter = filter;
         receiver->pa_filter_known = true;
@@ -872,7 +879,7 @@ int flex1500_usb_rx_enable_transmit_preparation(flex1500_usb_rx *receiver)
     flex1500_build_amp_tx1_request(receiver->next_command_index++, true,
                                    packet);
     receiver->amp_enable_attempted = true;
-    int result = send_rx_command(receiver, packet, "prepare TX SET_AMP_TX1(1)");
+    result = send_rx_command(receiver, packet, "prepare TX SET_AMP_TX1(1)");
     if (result != LIBUSB_SUCCESS) {
         if (receiver->pa_filter_known) {
             flex1500_build_pa_filter_request(receiver->next_command_index++, 0,
@@ -1148,6 +1155,8 @@ int flex1500_usb_rx_microphone_tx_stop_graceful(
         return LIBUSB_ERROR_INVALID_PARAM;
     }
     receiver->tx_accepting_audio = false;
+    flex1500_tx_audio_stream_begin_graceful_stop(
+        &receiver->microphone_stream);
     size_t requested = flex1500_usb_rx_tx_pending_frames(receiver);
     receiver->microphone_stream.stats.stop_requested_frames += requested;
     uint64_t started = monotonic_ms();

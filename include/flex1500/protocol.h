@@ -26,6 +26,7 @@ enum {
     FLEX1500_OP_SET_PA_FILTER = 1260,
     FLEX1500_OP_SET_TR = 1276,
     FLEX1500_OP_SET_RX1_ANT = 1278,
+    FLEX1500_OP_SET_TX_ANT = 1279,
     FLEX1500_OP_SET_AMP_TX1 = 1298,
     FLEX1500_OP_SET_RX1_FREQ_TW = 1347,
 };
@@ -119,6 +120,10 @@ bool flex1500_build_rx_gain_request(
 bool flex1500_build_rx_antenna_request(
     uint8_t index, flex1500_rx_antenna antenna,
     uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE]);
+
+/* The FLEX-1500 has one normal TX antenna path; PowerSDR selects parameter 0. */
+bool flex1500_build_main_tx_antenna_request(
+    uint8_t index, uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE]);
 
 /* PA filter indices 0..7 observed in the PowerSDR filter map. */
 bool flex1500_build_pa_filter_request(

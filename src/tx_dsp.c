@@ -7,9 +7,6 @@
 #include <string.h>
 
 #define SAMPLE_RATE 48000.0f
-#define LOW_CUT_HZ 300.0f
-#define HIGH_CUT_HZ 3000.0f
-
 static const float PI_F = 3.14159265358979323846f;
 
 static float lowpass_coefficient(float cutoff, int offset)
@@ -22,20 +19,40 @@ static float lowpass_coefficient(float cutoff, int offset)
 void flex1500_tx_dsp_init(flex1500_tx_dsp *dsp,
                           flex1500_tx_sideband sideband)
 {
+    (void)flex1500_tx_dsp_init_passband(
+        dsp, sideband, FLEX1500_TX_DEFAULT_LOW_CUT_HZ,
+        FLEX1500_TX_DEFAULT_HIGH_CUT_HZ);
+}
+
+bool flex1500_tx_dsp_init_passband(flex1500_tx_dsp *dsp,
+                                   flex1500_tx_sideband sideband,
+                                   unsigned int low_cut_hz,
+                                   unsigned int high_cut_hz)
+{
+    if (dsp == NULL ||
+        (sideband != FLEX1500_TX_USB && sideband != FLEX1500_TX_LSB) ||
+        low_cut_hz < FLEX1500_TX_MIN_LOW_CUT_HZ ||
+        high_cut_hz > FLEX1500_TX_MAX_HIGH_CUT_HZ ||
+        high_cut_hz < low_cut_hz + FLEX1500_TX_MIN_PASSBAND_HZ) {
+        return false;
+    }
     memset(dsp, 0, sizeof(*dsp));
     dsp->sideband = sideband;
+    dsp->low_cut_hz = low_cut_hz;
+    dsp->high_cut_hz = high_cut_hz;
     const int middle = (FLEX1500_TX_FIR_TAPS - 1) / 2;
     for (int tap = 0; tap < FLEX1500_TX_FIR_TAPS; ++tap) {
         int offset = tap - middle;
         float window = 0.54f - 0.46f *
             cosf(2.0f * PI_F * tap / (FLEX1500_TX_FIR_TAPS - 1));
         dsp->bandpass[tap] =
-            (lowpass_coefficient(HIGH_CUT_HZ, offset) -
-             lowpass_coefficient(LOW_CUT_HZ, offset)) * window;
+            (lowpass_coefficient((float)high_cut_hz, offset) -
+             lowpass_coefficient((float)low_cut_hz, offset)) * window;
         if (offset != 0 && (abs(offset) & 1) != 0) {
             dsp->hilbert[tap] = 2.0f * window / (PI_F * offset);
         }
     }
+    return true;
 }
 
 static float fir(const float *coefficients, const float *history,

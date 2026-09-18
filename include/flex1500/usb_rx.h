@@ -69,7 +69,7 @@ int flex1500_usb_rx_pump(flex1500_usb_rx *receiver);
 int flex1500_usb_rx_tune(flex1500_usb_rx *receiver, uint32_t frequency_hz);
 int flex1500_usb_rx_set_gain(flex1500_usb_rx *receiver, int32_t gain_db);
 
-/* Prepare the validated TX hardware path; PA selection follows RX tuning. */
+/* Select main TX antenna and prepare TX hardware; PA selection follows RX. */
 int flex1500_usb_rx_enable_transmit_preparation(flex1500_usb_rx *receiver);
 int flex1500_usb_rx_disable_transmit_preparation(flex1500_usb_rx *receiver);
 bool flex1500_usb_rx_transmit_prepared(const flex1500_usb_rx *receiver);

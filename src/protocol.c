@@ -216,6 +216,17 @@ bool flex1500_build_rx_antenna_request(
     return true;
 }
 
+bool flex1500_build_main_tx_antenna_request(
+    uint8_t index, uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE])
+{
+    if (packet == NULL) return false;
+    memset(packet, 0, FLEX1500_COMMAND_PACKET_SIZE);
+    packet[0] = index;
+    store_be32(&packet[4], FLEX1500_OP_SET_TX_ANT);
+    store_be32(&packet[8], 0);
+    return true;
+}
+
 bool flex1500_build_pa_filter_request(
     uint8_t index, uint32_t filter,
     uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE])

@@ -5,10 +5,16 @@
 #include <math.h>
 #include <string.h>
 
-enum { START_FADE_FRAMES = 480 };
-
 #define COMPRESSOR_THRESHOLD 0.25f
 #define COMPRESSOR_RATIO 3.0f
+
+static float raised_cosine(float position)
+{
+    const float pi = 3.14159265358979323846f;
+    if (position <= 0.0f) return 0.0f;
+    if (position >= 1.0f) return 1.0f;
+    return 0.5f - 0.5f * cosf(pi * position);
+}
 
 static int16_t clamp_i16(float sample, bool *clipped)
 {
@@ -37,8 +43,9 @@ bool flex1500_tx_audio_stream_init(flex1500_tx_audio_stream *stream,
     memset(stream, 0, sizeof(*stream));
     stream->drive_percent = drive_percent;
     stream->microphone_gain = microphone_gain;
-    flex1500_tx_dsp_init(&stream->dsp, sideband);
-    return true;
+    return flex1500_tx_dsp_init_passband(
+        &stream->dsp, sideband, FLEX1500_TX_DEFAULT_LOW_CUT_HZ,
+        FLEX1500_TX_DEFAULT_HIGH_CUT_HZ);
 }
 
 void flex1500_tx_audio_stream_reset(flex1500_tx_audio_stream *stream,
@@ -49,6 +56,10 @@ void flex1500_tx_audio_stream_reset(flex1500_tx_audio_stream *stream,
     stream->write_index = 0;
     stream->count = 0;
     stream->fade_position = 0;
+    stream->graceful_stop_requested = false;
+    stream->previous_output_valid = false;
+    stream->previous_output_i = 0.0f;
+    stream->previous_output_q = 0.0f;
     flex1500_tx_dsp_init(&stream->dsp, sideband);
 }
 
@@ -56,6 +67,14 @@ void flex1500_tx_audio_stream_set_compressor(flex1500_tx_audio_stream *stream,
                                              bool enabled)
 {
     if (stream != NULL) stream->compressor_enabled = enabled;
+}
+
+void flex1500_tx_audio_stream_begin_graceful_stop(
+    flex1500_tx_audio_stream *stream)
+{
+    if (stream != NULL && !stream->raw_iq) {
+        stream->graceful_stop_requested = true;
+    }
 }
 
 void flex1500_tx_audio_stream_set_raw_iq(flex1500_tx_audio_stream *stream,
@@ -67,7 +86,8 @@ void flex1500_tx_audio_stream_set_raw_iq(flex1500_tx_audio_stream *stream,
 size_t flex1500_tx_audio_stream_push_pcm16le(
     flex1500_tx_audio_stream *stream, const uint8_t *input, size_t bytes)
 {
-    if (stream == NULL || input == NULL || stream->raw_iq) return 0;
+    if (stream == NULL || input == NULL || stream->raw_iq ||
+        stream->graceful_stop_requested) return 0;
     size_t frames = bytes / 2, accepted = 0;
     for (size_t frame = 0; frame < frames; ++frame) {
         int16_t sample = (int16_t)((uint16_t)input[frame * 2] |
@@ -96,7 +116,8 @@ size_t flex1500_tx_audio_stream_push_pcm16le(
 size_t flex1500_tx_audio_stream_push_iq16le(
     flex1500_tx_audio_stream *stream, const uint8_t *input, size_t bytes)
 {
-    if (stream == NULL || input == NULL) return 0;
+    if (stream == NULL || input == NULL ||
+        stream->graceful_stop_requested) return 0;
     size_t frames = bytes / 4;
     size_t accepted = 0;
     for (size_t frame = 0; frame < frames; ++frame) {
@@ -172,10 +193,17 @@ size_t flex1500_tx_audio_stream_render_iq16le(
             /* Advance with silence so filter state decays continuously. */
             iq = flex1500_tx_dsp_process(&stream->dsp, 0.0f);
         }
-        float fade = stream->fade_position < START_FADE_FRAMES
-            ? (float)stream->fade_position / START_FADE_FRAMES : 1.0f;
-        if (stream->fade_position < START_FADE_FRAMES) {
+        float fade = stream->fade_position < FLEX1500_TX_ENVELOPE_FRAMES
+            ? raised_cosine((float)stream->fade_position /
+                            FLEX1500_TX_ENVELOPE_FRAMES)
+            : 1.0f;
+        if (stream->fade_position < FLEX1500_TX_ENVELOPE_FRAMES) {
             ++stream->fade_position;
+        }
+        if (stream->graceful_stop_requested &&
+            stream->count < FLEX1500_TX_ENVELOPE_FRAMES) {
+            fade *= raised_cosine((float)stream->count /
+                                  FLEX1500_TX_ENVELOPE_FRAMES);
         }
         float output_i = iq.i * drive_limit * fade;
         float output_q = iq.q * drive_limit * fade;
@@ -190,6 +218,16 @@ size_t flex1500_tx_audio_stream_render_iq16le(
         int16_t sample_i = clamp_i16(output_i, &clipped);
         int16_t sample_q = clamp_i16(output_q, &clipped);
         if (clipped) ++stream->stats.clipped_frames;
+        if (stream->previous_output_valid) {
+            float step = hypotf((float)sample_i - stream->previous_output_i,
+                                (float)sample_q - stream->previous_output_q);
+            if (step > stream->stats.maximum_output_step) {
+                stream->stats.maximum_output_step = step;
+            }
+        }
+        stream->previous_output_i = sample_i;
+        stream->previous_output_q = sample_q;
+        stream->previous_output_valid = true;
         float magnitude = hypotf((float)sample_i, (float)sample_q);
         float normalized_output = drive_limit > 0.0f
             ? magnitude / (float)FLEX1500_TX_FULL_DRIVE_PEAK : 0.0f;

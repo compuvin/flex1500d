@@ -37,8 +37,13 @@ functions performed inside the radio.
 - [ ] Implement optional transverter receive/transmit routing only after the
   physical connections, frequency mapping, offsets, and TX safety behavior are
   independently reviewed.
-- [ ] Document `SET_TX_ANT` parameters and determine whether any user-facing TX
+- [x] Document `SET_TX_ANT` parameters and determine whether any user-facing TX
   signal-path control is appropriate for this model.
+  PowerSDR captures use parameter 0 for the FLEX-1500's sole normal PA/main-
+  antenna path. Transmit-enabled daemon startup now selects that path
+  explicitly. It is intentionally fixed rather than exposed as a misleading
+  general-purpose antenna selector; transverter routing remains separate
+  future research.
 - [ ] Document `SET_XREF` and the external 10 MHz reference-input behavior,
   including selection, tuning-word calculations, loss-of-reference behavior,
   and safe fallback to the internal reference.

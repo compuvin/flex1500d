@@ -14,6 +14,18 @@ static int16_t load_i16(const uint8_t *input)
     return (int16_t)((uint16_t)input[0] | ((uint16_t)input[1] << 8));
 }
 
+static void store_i16(uint8_t *output, int16_t sample)
+{
+    output[0] = (uint8_t)sample;
+    output[1] = (uint8_t)((uint16_t)sample >> 8);
+}
+
+static float iq_magnitude_at(const uint8_t *samples, size_t frame)
+{
+    return hypotf(load_i16(&samples[frame * 4]),
+                  load_i16(&samples[frame * 4 + 2]));
+}
+
 static float maximum_iq_magnitude(const uint8_t *samples, size_t frames)
 {
     float maximum = 0.0f;
@@ -110,7 +122,9 @@ int main(void)
     uint8_t loud_input[2048 * 4] = {0};
     uint8_t limited_output[2048 * 4];
     for (size_t frame = 0; frame < 2048; ++frame) {
-        int16_t sample = (frame & 1) != 0 ? INT16_MAX : INT16_MIN;
+        float phase = 2.0f * 3.14159265358979323846f * 1000.0f * frame /
+                      48000.0f;
+        int16_t sample = (int16_t)lrintf(INT16_MAX * sinf(phase));
         loud_input[frame * 4] = (uint8_t)sample;
         loud_input[frame * 4 + 1] = (uint8_t)((uint16_t)sample >> 8);
     }
@@ -123,7 +137,7 @@ int main(void)
     const flex1500_tx_audio_stats *protected_stats =
         flex1500_tx_audio_stream_stats(&protected_stream);
     CHECK(protected_stats->input_peak > 0.99f);
-    CHECK(protected_stats->input_rms > 0.99f);
+    CHECK(protected_stats->input_rms > 0.70f);
     CHECK(protected_stats->post_gain_peak > 99.0f);
     CHECK(protected_stats->limited_frames > 0);
     CHECK(protected_stats->clipped_frames == 0);
@@ -188,5 +202,74 @@ int main(void)
     CHECK(flex1500_tx_audio_stream_init(&pcm, FLEX1500_TX_LSB, 50, 1.0f));
     CHECK(flex1500_tx_audio_stream_push_pcm16le(
         &pcm, pcm_input, sizeof(pcm_input)) == 4800);
+
+    /* Arbitrary input/render chunk boundaries must not reset DSP state. */
+    enum { CONTINUITY_FRAMES = 4096 };
+    uint8_t continuity_input[CONTINUITY_FRAMES * 2];
+    uint8_t whole_output[CONTINUITY_FRAMES * 4];
+    uint8_t chunked_output[CONTINUITY_FRAMES * 4];
+    for (size_t frame = 0; frame < CONTINUITY_FRAMES; ++frame) {
+        float phase = 2.0f * 3.14159265358979323846f * 1379.0f * frame /
+                      48000.0f;
+        store_i16(&continuity_input[frame * 2],
+                  (int16_t)lrintf(12000.0f * sinf(phase)));
+    }
+    flex1500_tx_audio_stream whole;
+    flex1500_tx_audio_stream chunked;
+    CHECK(flex1500_tx_audio_stream_init(
+        &whole, FLEX1500_TX_USB, 50, 1.0f));
+    CHECK(flex1500_tx_audio_stream_init(
+        &chunked, FLEX1500_TX_USB, 50, 1.0f));
+    CHECK(flex1500_tx_audio_stream_push_pcm16le(
+        &whole, continuity_input, sizeof(continuity_input)) ==
+        CONTINUITY_FRAMES);
+    CHECK(flex1500_tx_audio_stream_render_iq16le(
+        &whole, whole_output, CONTINUITY_FRAMES) == CONTINUITY_FRAMES);
+    const size_t chunks[] = {1, 7, 31, 113, 509};
+    size_t position = 0;
+    size_t chunk_index = 0;
+    while (position < CONTINUITY_FRAMES) {
+        size_t frames = chunks[chunk_index++ %
+                               (sizeof(chunks) / sizeof(chunks[0]))];
+        if (frames > CONTINUITY_FRAMES - position) {
+            frames = CONTINUITY_FRAMES - position;
+        }
+        CHECK(flex1500_tx_audio_stream_push_pcm16le(
+            &chunked, &continuity_input[position * 2], frames * 2) == frames);
+        CHECK(flex1500_tx_audio_stream_render_iq16le(
+            &chunked, &chunked_output[position * 4], frames) == frames);
+        position += frames;
+    }
+    CHECK(memcmp(whole_output, chunked_output, sizeof(whole_output)) == 0);
+
+    /* Raised-cosine startup and graceful-stop envelopes reach exact zero. */
+    enum { ENVELOPE_FRAMES = 2400 };
+    uint8_t envelope_input[ENVELOPE_FRAMES * 2];
+    uint8_t envelope_output[ENVELOPE_FRAMES * 4];
+    for (size_t frame = 0; frame < ENVELOPE_FRAMES; ++frame) {
+        float phase = 2.0f * 3.14159265358979323846f * 1000.0f * frame /
+                      48000.0f;
+        store_i16(&envelope_input[frame * 2],
+                  (int16_t)lrintf(16000.0f * cosf(phase)));
+    }
+    flex1500_tx_audio_stream envelope;
+    CHECK(flex1500_tx_audio_stream_init(
+        &envelope, FLEX1500_TX_USB, 50, 1.0f));
+    CHECK(flex1500_tx_audio_stream_push_pcm16le(
+        &envelope, envelope_input, sizeof(envelope_input)) == ENVELOPE_FRAMES);
+    CHECK(flex1500_tx_audio_stream_render_iq16le(
+        &envelope, envelope_output, 1200) == 1200);
+    flex1500_tx_audio_stream_begin_graceful_stop(&envelope);
+    CHECK(flex1500_tx_audio_stream_push_pcm16le(
+        &envelope, envelope_input, 2) == 0);
+    CHECK(flex1500_tx_audio_stream_render_iq16le(
+        &envelope, &envelope_output[1200 * 4], 1200) == 1200);
+    CHECK(iq_magnitude_at(envelope_output, 0) == 0.0f);
+    CHECK(iq_magnitude_at(envelope_output, ENVELOPE_FRAMES - 1) == 0.0f);
+    CHECK(iq_magnitude_at(envelope_output, 1800) >
+          iq_magnitude_at(envelope_output, ENVELOPE_FRAMES - 120));
+    CHECK(flex1500_tx_audio_stream_stats(&envelope)->clipped_frames == 0);
+    CHECK(flex1500_tx_audio_stream_stats(&envelope)->maximum_output_step <
+          FLEX1500_TX_FULL_DRIVE_PEAK * 0.2f);
     return EXIT_SUCCESS;
 }

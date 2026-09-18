@@ -13,6 +13,7 @@
 enum {
     FLEX1500_TX_AUDIO_CAPACITY = 65536,
     FLEX1500_TX_FULL_DRIVE_PEAK = 24890,
+    FLEX1500_TX_ENVELOPE_FRAMES = 480,
 };
 
 typedef struct flex1500_tx_audio_stats {
@@ -34,6 +35,7 @@ typedef struct flex1500_tx_audio_stats {
     float output_peak;
     float output_rms;
     float peak_magnitude;
+    float maximum_output_step;
 } flex1500_tx_audio_stats;
 
 typedef struct flex1500_tx_audio_stream {
@@ -52,6 +54,10 @@ typedef struct flex1500_tx_audio_stream {
     double output_square_sum;
     uint64_t post_gain_frames;
     size_t fade_position;
+    bool graceful_stop_requested;
+    bool previous_output_valid;
+    float previous_output_i;
+    float previous_output_q;
     flex1500_tx_audio_stats stats;
 } flex1500_tx_audio_stream;
 
@@ -63,6 +69,8 @@ void flex1500_tx_audio_stream_reset(flex1500_tx_audio_stream *stream,
                                     flex1500_tx_sideband sideband);
 void flex1500_tx_audio_stream_set_compressor(flex1500_tx_audio_stream *stream,
                                              bool enabled);
+void flex1500_tx_audio_stream_begin_graceful_stop(
+    flex1500_tx_audio_stream *stream);
 size_t flex1500_tx_audio_stream_push_iq16le(
     flex1500_tx_audio_stream *stream, const uint8_t *input, size_t bytes);
 size_t flex1500_tx_audio_stream_push_pcm16le(

@@ -41,6 +41,12 @@ microphone PTT, and exposes the guarded HTTP TX session routes. It also enables
 receive and receive-frequency control. Starting this mode does not itself key
 the transmitter.
 
+As part of transmit-mode preparation, the daemon sends PowerSDR's observed
+`SET_TX_ANT(0)` command to select the radio's sole normal PA/main-antenna path.
+This is fixed startup configuration, not a user-facing antenna selector. The
+XVRX and XVTX/COM connectors are specialized transverter paths and remain
+outside the implemented transmit path.
+
 The API currently listens on all host interfaces without authentication or
 transport encryption. Use it only on a firewall-protected trusted LAN. TX
 leases prevent competing transmitter owners but are not authentication
@@ -57,6 +63,9 @@ credentials or security boundaries.
 | HTTP raw I/Q (`cs16le`, 48 kHz) | Live validated with constant-envelope calibration signals at 25%, 50%, 75%, and 100% drive at 28.475 MHz. The complete ±24 kHz span must fit inside an allowed amateur allocation. |
 | SoapySDR raw-I/Q TX | Repeatedly live validated with SDR Oxide at 28.475 MHz into a dummy load, including clean PTT stop and lease release. Other applications remain unvalidated. |
 | AM, FM, CW, and digital-mode modulation in the daemon | Not implemented. A client may not select these as daemon-generated TX modes. Raw-I/Q clients remain responsible for their generated emission. |
+
+The daemon-generated USB/LSB audio processing and its offline verification are
+documented in [the transmit audio signal chain](TX_SIGNAL_CHAIN.md).
 
 An SDR application's Tune button is not the daemon's dedicated Tune API.
 During SDR Oxide validation it opened a normal raw-I/Q TX stream and keyed the
@@ -115,7 +124,9 @@ ended.
 
 Normal PTT release uses a bounded graceful stop: no new audio is accepted, and
 up to one second is allowed for already queued DSP/USB frames to finish before
-unkey. This bound prevents a stale backlog from holding the transmitter keyed.
+unkey. The final 10 ms of queued daemon-generated audio uses a raised-cosine
+fade to reach zero before normal unkey. This bound prevents a stale backlog
+from holding the transmitter keyed.
 All watchdog, disconnect, error, shutdown, preemption, and emergency paths
 continue to unkey immediately. The daemon logs pending, drained, discarded,
 and elapsed values for each graceful stop.

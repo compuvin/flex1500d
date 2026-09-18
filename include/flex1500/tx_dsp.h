@@ -5,9 +5,17 @@
 
 #include "flex1500/iq.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 
-enum { FLEX1500_TX_FIR_TAPS = 129 };
+enum {
+    FLEX1500_TX_FIR_TAPS = 129,
+    FLEX1500_TX_DEFAULT_LOW_CUT_HZ = 300,
+    FLEX1500_TX_DEFAULT_HIGH_CUT_HZ = 3000,
+    FLEX1500_TX_MIN_LOW_CUT_HZ = 50,
+    FLEX1500_TX_MAX_HIGH_CUT_HZ = 12000,
+    FLEX1500_TX_MIN_PASSBAND_HZ = 100,
+};
 
 typedef enum flex1500_tx_sideband {
     FLEX1500_TX_USB,
@@ -23,11 +31,17 @@ typedef struct flex1500_tx_dsp {
     size_t filtered_index;
     float previous_input;
     float previous_highpass;
+    unsigned int low_cut_hz;
+    unsigned int high_cut_hz;
     flex1500_tx_sideband sideband;
 } flex1500_tx_dsp;
 
 void flex1500_tx_dsp_init(flex1500_tx_dsp *dsp,
                           flex1500_tx_sideband sideband);
+bool flex1500_tx_dsp_init_passband(flex1500_tx_dsp *dsp,
+                                   flex1500_tx_sideband sideband,
+                                   unsigned int low_cut_hz,
+                                   unsigned int high_cut_hz);
 flex1500_iq_sample flex1500_tx_dsp_process(flex1500_tx_dsp *dsp,
                                            float microphone_sample);
 

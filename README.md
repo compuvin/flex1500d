@@ -481,6 +481,7 @@ unexpected transmission.
 - [Daemon architecture](docs/DAEMON_ARCHITECTURE.md)
 - [Network API and IQ framing](docs/NETWORK_API.md)
 - [Receive DSP](docs/RECEIVE_DSP.md)
+- [Transmit audio signal chain](docs/TX_SIGNAL_CHAIN.md)
 - [SDR compatibility roadmap](docs/SDR_COMPATIBILITY.md)
 - [Protocol findings](docs/PROTOCOL_FINDINGS.md)
 - [Hardware safety](docs/HARDWARE_SAFETY.md)

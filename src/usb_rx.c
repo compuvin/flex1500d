@@ -1005,21 +1005,24 @@ fail:
 }
 
 static int audio_tx_start(flex1500_usb_rx *receiver,
-                          flex1500_tx_sideband sideband,
+                          flex1500_tx_mode mode,
                           unsigned int drive_percent, float microphone_gain,
                           bool compressor_enabled, bool capture_physical,
-                          bool raw_iq, const uint8_t *prebuffer, size_t bytes)
+                          bool raw_iq, bool translate_raw_iq,
+                          const uint8_t *prebuffer, size_t bytes)
 {
     uint8_t packet[FLEX1500_COMMAND_PACKET_SIZE];
     uint32_t pa_filter;
     uint32_t tx_word;
+    uint32_t tx_offset_hz = mode == FLEX1500_TX_AM || translate_raw_iq
+        ? FLEX1500_TX_AM_IF_HZ : 0;
     if (receiver == NULL || !receiver->running || receiver->handle == NULL ||
         !receiver->transmit_prepared || !receiver->frequency_known ||
         receiver->tune_active || receiver->tune_streaming ||
         !flex1500_pa_filter_for_frequency(receiver->frequency_hz, &pa_filter) ||
-        !flex1500_usb_tune_frequency_to_tuning_word(receiver->frequency_hz, 0,
-                                                    &tx_word) ||
-        !flex1500_tx_audio_stream_init(&receiver->microphone_stream, sideband,
+        !flex1500_usb_tune_frequency_to_tuning_word(
+            receiver->frequency_hz, tx_offset_hz, &tx_word) ||
+        !flex1500_tx_audio_stream_init(&receiver->microphone_stream, mode,
                                        drive_percent, microphone_gain)) {
         if (receiver != NULL) {
             set_error(receiver, "microphone TX start policy rejected");
@@ -1029,6 +1032,8 @@ static int audio_tx_start(flex1500_usb_rx *receiver,
     flex1500_tx_audio_stream_set_compressor(&receiver->microphone_stream,
                                             compressor_enabled);
     flex1500_tx_audio_stream_set_raw_iq(&receiver->microphone_stream, raw_iq);
+    flex1500_tx_audio_stream_set_raw_iq_translation(
+        &receiver->microphone_stream, translate_raw_iq);
     if (prebuffer != NULL && bytes != 0) {
         size_t accepted = raw_iq
             ? flex1500_tx_audio_stream_push_iq16le(
@@ -1086,23 +1091,24 @@ fail:
 }
 
 int flex1500_usb_rx_microphone_tx_start(flex1500_usb_rx *receiver,
-                                       flex1500_tx_sideband sideband,
+                                       flex1500_tx_mode mode,
                                        unsigned int drive_percent,
                                        float microphone_gain,
                                        bool compressor_enabled)
 {
-    return audio_tx_start(receiver, sideband, drive_percent, microphone_gain,
-                          compressor_enabled, true, false, NULL, 0);
+    return audio_tx_start(receiver, mode, drive_percent, microphone_gain,
+                          compressor_enabled, true, false, false, NULL, 0);
 }
 
 int flex1500_usb_rx_network_tx_start(flex1500_usb_rx *receiver,
-                                     flex1500_tx_sideband sideband,
+                                     flex1500_tx_mode mode,
                                      unsigned int drive_percent,
-                                     bool raw_iq, const uint8_t *prebuffer,
+                                     bool raw_iq, bool translate_raw_iq,
+                                     const uint8_t *prebuffer,
                                      size_t bytes)
 {
-    return audio_tx_start(receiver, sideband, drive_percent, 1.0f, false,
-                          false, raw_iq, prebuffer, bytes);
+    return audio_tx_start(receiver, mode, drive_percent, 1.0f, false,
+                          false, raw_iq, translate_raw_iq, prebuffer, bytes);
 }
 
 size_t flex1500_usb_rx_network_tx_push(flex1500_usb_rx *receiver,

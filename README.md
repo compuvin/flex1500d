@@ -447,7 +447,7 @@ The daemon's live-tested transmit features require configured
 equivalent. This includes the capture-matched nominal 5 W Tune carrier. The
 mode also provides receive streaming and controls, prepares the TX amplifier
 path, and keeps the PA filter mapped to the known frequency. Physical
-microphone PTT and continuous USB/LSB modulation are now connected to the
+microphone PTT and continuous AM/USB/LSB modulation are now connected to the
 reviewed ownership and cleanup path. Repeated USB voice tests into a dummy load
 validated natural
 audio, adequate subjective level, reliable PTT, unkey, and RX restoration;
@@ -455,7 +455,7 @@ calibrated modulation/ALC measurement and live LSB validation remain open.
 Physical and HTTP PTT are rejected unless TX mode is enabled, startup/recovery
 has established an unkeyed prepared state, the frequency is known and
 permitted by the daemon's band policy, and the selected profile is valid. HTTP
-TX accepts USB/LSB PCM audio or guarded raw complex I/Q. The SoapySDR adapter
+TX accepts AM/USB/LSB PCM audio or guarded raw complex I/Q. The SoapySDR adapter
 maps its TX stream to the same leased raw-I/Q API and exposes TX only to the
 station owner when the connected daemon reports transmit enabled.
 

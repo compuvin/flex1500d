@@ -164,12 +164,14 @@ static bool parse_tx_profile(const char *request,
         sscanf(channels, "\"channels\":%u", &channel_value) != 1) return false;
     profile->mode = strcmp(mode_text, "usb") == 0 ? FLEX1500_NETWORK_TX_USB :
         strcmp(mode_text, "lsb") == 0 ? FLEX1500_NETWORK_TX_LSB :
+        strcmp(mode_text, "am") == 0 ? FLEX1500_NETWORK_TX_AM :
         FLEX1500_NETWORK_TX_IQ_MODE;
     profile->source = strcmp(source_text, "audio") == 0
         ? FLEX1500_NETWORK_TX_AUDIO : FLEX1500_NETWORK_TX_IQ;
     profile->drive_percent = drive_value;
     profile->sample_rate = rate_value;
     return (strcmp(mode_text, "usb") == 0 || strcmp(mode_text, "lsb") == 0 ||
+            strcmp(mode_text, "am") == 0 ||
             strcmp(mode_text, "iq") == 0) &&
            (strcmp(source_text, "audio") == 0 || strcmp(source_text, "iq") == 0) &&
            ((strcmp(source_text, "audio") == 0 && strcmp(format_text, "s16le") == 0 && channel_value == 1) ||
@@ -295,10 +297,15 @@ flex1500_api_action flex1500_api_dispatch(
             return FLEX1500_API_RESPONSE;
         }
         if (owner_acquire) {
+            const char *mode_aware_header = request_header(
+                request, "X-Flex1500-Mode-Aware");
+            bool mode_aware = mode_aware_header == NULL ||
+                strncasecmp(mode_aware_header, "false", 5) != 0;
             lease = controller->next_station_lease++;
             if (lease == 0) lease = controller->next_station_lease++;
-            result = flex1500_station_owner_acquire(controller->station_owner,
-                                                     lease, controller->request_now_ms);
+            result = flex1500_station_owner_acquire_with_mode(
+                controller->station_owner, lease, controller->request_now_ms,
+                mode_aware);
         } else {
             const char *value = request_header(request, "X-Flex1500-Control-Lease");
             if (value != NULL) lease = strtoull(value, NULL, 10);
@@ -315,8 +322,12 @@ flex1500_api_action flex1500_api_dispatch(
         }
         char body[128];
         if (result == FLEX1500_STATION_OWNER_OK) {
-            snprintf(body, sizeof(body), "{\"owner\":%s,\"lease\":%llu}\n",
-                     owner_release ? "false" : "true", (unsigned long long)lease);
+            snprintf(body, sizeof(body),
+                     "{\"owner\":%s,\"lease\":%llu,\"mode_aware\":%s}\n",
+                     owner_release ? "false" : "true",
+                     (unsigned long long)lease,
+                     owner_release || controller->station_owner->mode_aware
+                         ? "true" : "false");
             *response_length = json_response(owner_acquire ? "201 Created" : "200 OK", body, response, capacity);
         } else {
             snprintf(body, sizeof(body), "{\"error\":\"owner_%s\"}\n",
@@ -375,9 +386,12 @@ flex1500_api_action flex1500_api_dispatch(
                     (profile->source == FLEX1500_NETWORK_TX_IQ
                         ? flex1500_network_iq_frequency_allowed(
                               radio->frequency_hz)
-                        : flex1500_physical_mic_frequency_allowed(
-                              radio->frequency_hz,
-                              profile->mode == FLEX1500_NETWORK_TX_USB));
+                        : profile->mode == FLEX1500_NETWORK_TX_AM
+                            ? flex1500_am_frequency_allowed(
+                                  radio->frequency_hz)
+                            : flex1500_physical_mic_frequency_allowed(
+                                  radio->frequency_hz,
+                                  profile->mode == FLEX1500_NETWORK_TX_USB));
                 result = frequency_allowed
                     ? flex1500_network_tx_ptt_start(controller->network_tx,
                           lease, controller->request_now_ms)

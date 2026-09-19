@@ -133,6 +133,9 @@ bool flex1500_pa_filter_for_frequency(uint32_t frequency_hz,
                                       uint32_t *filter);
 bool flex1500_physical_mic_frequency_allowed(
     uint32_t frequency_hz, bool upper_sideband);
+bool flex1500_am_frequency_allowed(uint32_t frequency_hz);
+bool flex1500_default_ssb_upper_sideband(uint32_t frequency_hz,
+                                         bool *upper_sideband);
 bool flex1500_tune_frequency_allowed(uint32_t frequency_hz);
 bool flex1500_network_iq_frequency_allowed(uint32_t frequency_hz);
 

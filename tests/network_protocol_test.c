@@ -102,6 +102,8 @@ int main(void)
     CHECK(strstr(page, "/v1/radio/frequency/") != NULL);
     CHECK(strstr(page, "/v1/stream/iq") != NULL);
     CHECK(strstr(page, "AudioWorkletNode") != NULL);
+    CHECK(strstr(page, "firstChunk") != NULL);
+    CHECK(strstr(page, "Microphone produced no audio frames") != NULL);
     CHECK(strstr(page, "Start audio") != NULL);
     CHECK(strstr(page, "<option>AM</option>") != NULL);
     CHECK(strstr(page, "<option>USB</option>") != NULL);

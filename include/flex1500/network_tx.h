@@ -24,6 +24,7 @@ typedef enum flex1500_network_tx_source {
 typedef enum flex1500_network_tx_mode {
     FLEX1500_NETWORK_TX_USB,
     FLEX1500_NETWORK_TX_LSB,
+    FLEX1500_NETWORK_TX_AM,
     FLEX1500_NETWORK_TX_IQ_MODE,
 } flex1500_network_tx_mode;
 

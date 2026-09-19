@@ -58,13 +58,14 @@ credentials or security boundaries.
 | --- | --- |
 | Capture-matched Tune carrier | Live validated at 5 W into a dummy load; exclusive lease, keepalive watchdog, maximum-key timer, and cleanup apply. |
 | Physical microphone USB | Repeated live voice validation into a dummy load; physical PTT uses the shared exclusive owner. |
-| Physical microphone LSB | Implemented with offline spectral tests; still needs a dedicated live dummy-load validation. |
-| HTTP mono PCM (`s16le`, 48 kHz) | USB completed a live three-second tone test with zero underruns or errors. LSB uses the same tested DSP orientation but still needs dedicated live validation. |
+| Physical microphone LSB | Implemented with offline spectral tests. Live physical-PTT testing with Soapy as primary selected LSB at 7.239 MHz and completed a clean key/unkey cycle; received-audio validation remains incomplete. |
+| Physical microphone AM | The initial DC-centered implementation produced poor live audio. After reproducing PowerSDR's captured −11.025 kHz complex carrier with equal hardware-frequency compensation, live testing produced dramatically improved AM audio. The corrected path also passes offline carrier, envelope, and spectral tests. |
+| HTTP mono PCM (`s16le`, 48 kHz) | USB completed a live three-second tone test with zero underruns or errors. AM and LSB have offline DSP coverage but still need dedicated live validation. |
 | HTTP raw I/Q (`cs16le`, 48 kHz) | Live validated with constant-envelope calibration signals at 25%, 50%, 75%, and 100% drive at 28.475 MHz. The complete ±24 kHz span must fit inside an allowed amateur allocation. |
-| SoapySDR raw-I/Q TX | Repeatedly live validated with SDR Oxide at 28.475 MHz into a dummy load, including clean PTT stop and lease release. Other applications remain unvalidated. |
-| AM, FM, CW, and digital-mode modulation in the daemon | Not implemented. A client may not select these as daemon-generated TX modes. Raw-I/Q clients remain responsible for their generated emission. |
+| SoapySDR raw-I/Q TX | Repeatedly live validated with SDR Oxide at 28.475 MHz into a dummy load, including clean PTT stop and lease release. Automatic DC-carrier detection and 11.025 kHz translation produced good received AM audio with zero clipped or limited frames. Other applications remain unvalidated. |
+| FM, CW, and digital-mode modulation in the daemon | Not implemented. A client may not select these as daemon-generated TX modes. Raw-I/Q clients remain responsible for their generated emission. |
 
-The daemon-generated USB/LSB audio processing and its offline verification are
+The daemon-generated AM/USB/LSB audio processing and its offline verification are
 documented in [the transmit audio signal chain](TX_SIGNAL_CHAIN.md).
 
 An SDR application's Tune button is not the daemon's dedicated Tune API.
@@ -79,6 +80,15 @@ station control across individual transmissions. All other network clients are
 receive-only, cannot retune hardware, and can listen only within the owner's
 48 kHz IQ window. Physical microphone PTT is the local-priority exception and
 uses the current station configuration without revoking that network owner.
+
+When a mode-aware HTTP/API client is primary, physical PTT uses its explicit
+AM, USB, or LSB selection. Soapy does not report an application's local
+demodulator choice, so a primary Soapy connection instead gives physical PTT a
+frequency-derived SSB default: LSB on permitted lower-HF voice bands and USB on
+60 meters and permitted voice bands at 10 MHz and above. This does not change
+Soapy's own raw-I/Q transmit stream. Live testing confirmed LSB selection at
+7.239 MHz and USB selection at 28.475 MHz; the 10-meter USB transmission was
+also received on a second radio.
 
 Only one TX operation may be active. Physical microphone PTT, Tune, HTTP, and
 SoapySDR TX share the same transmitter state machine. Unsafe setting
@@ -97,6 +107,12 @@ QRP radio. Accepted drive values are 1–100%. Drive is a complex-I/Q amplitude
 percentage, not an RF-watt percentage. A non-disableable final limiter caps all
 daemon audio and raw-I/Q output at the selected drive. The measured calibration
 at 28.475 MHz is documented in [TX drive calibration](TX_DRIVE_CALIBRATION.md).
+
+For AM, the selected drive limits the positive peak envelope rather than the
+unmodulated carrier. The 80% modulation design places the idle carrier at
+approximately 55.6% of that peak amplitude, leaving headroom for both
+sidebands. A wattmeter should therefore not be expected to show the Tune
+carrier's 5 W indication while AM is keyed without audio.
 
 Every owner shares a non-disableable maximum-key timer. It defaults to 180
 seconds and may be configured from 30 through 1800 seconds while unkeyed. HTTP
@@ -179,8 +195,9 @@ transmitter may still be energized.
 - The 25/50/75/100% wattmeter results are frequency-, waveform-, radio-, and
   instrument-specific and must not be treated as universal watt settings.
 - General HTTP TX remains unauthenticated and unencrypted.
-- SoapySDR transmit and daemon-generated AM, FM, CW, and digital modulation are
-  not available.
+- SoapySDR transmit remains a raw-I/Q path; daemon-generated FM, CW, and
+  digital modulation are not available. Daemon-generated AM is implemented
+  but has not yet completed live dummy-load validation.
 - Independent safety review, exhaustive fault injection, broader dummy-load
   testing, and antenna readiness remain incomplete checklist work.
 

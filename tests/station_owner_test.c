@@ -20,11 +20,14 @@ int main(void)
     CHECK(flex1500_station_owner_tick(&owner, 17000) ==
           FLEX1500_STATION_OWNER_EXPIRED);
     CHECK(!owner.held);
-    CHECK(flex1500_station_owner_acquire(&owner, 42, 18000) ==
+    CHECK(flex1500_station_owner_acquire_with_mode(
+              &owner, 42, 18000, false) ==
           FLEX1500_STATION_OWNER_OK);
+    CHECK(!owner.mode_aware);
     CHECK(flex1500_station_owner_release(&owner, 41) ==
           FLEX1500_STATION_OWNER_STALE);
     CHECK(flex1500_station_owner_release(&owner, 42) ==
           FLEX1500_STATION_OWNER_OK);
+    CHECK(!owner.held && !owner.mode_aware);
     return 0;
 }

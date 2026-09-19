@@ -38,12 +38,13 @@ Content-Type: application/json
 }
 ```
 
-`mode` names the RF modulation performed by the daemon. Initially only modes
-whose complete transmit path has been implemented and live-validated may be
-accepted. Intended values are `usb`, `lsb`, `am`, `fm`, `cw`, and `iq`:
+`mode` names the RF modulation performed by the daemon. Only modes whose
+complete transmit path has been implemented and has appropriate offline safety
+coverage may be accepted for experimental validation. Intended values are
+`usb`, `lsb`, `am`, `fm`, `cw`, and `iq`:
 
 - `audio` supplies mono baseband PCM to a mode-specific daemon modulator. It is
-  valid only for an implemented audio modulation such as USB or LSB.
+  valid only for an implemented audio modulation: AM, USB, or LSB.
 - `iq` supplies already-modulated complex baseband samples. It requires mode
   `iq`; the daemon applies no voice-mode modulator. It enforces sample rate,
   final complex magnitude, drive, ownership, and coarse center-frequency
@@ -56,6 +57,11 @@ side of the center frequency) remains inside one configured amateur allocation.
 It is therefore rejected near band edges and on 60 meters. This guard cannot
 determine whether client-generated samples comply with emission, license-class,
 or geographic rules; the control operator remains responsible.
+
+The AM audio profile produces a centered full carrier with symmetric filtered
+sidebands and an 80% maximum nominal modulation index. Its 300–3000 Hz audio
+passband requires at least 3 kHz of permitted allocation on each side of the
+carrier. AM is therefore rejected at allocation edges and on 60 meters.
 
 Tune is not an audio mode or sample source and continues to use its dedicated
 API. Physical microphone input is selected by the radio's PTT edge rather than

@@ -72,6 +72,47 @@ Normal deactivation stops sample acceptance and permits a bounded one-second dra
 of meaningful frames already in the daemon's DSP/USB pipeline before unkey.
 Safety-driven stops remain immediate.
 
+The FLEX-1500 transmit path does not reproduce a carrier placed at complex DC
+cleanly. Before keying a raw-I/Q session, the daemon measures the existing
+4,096-frame prebuffer. If its RMS level is nontrivial and at least 75% of that
+level is a coherent DC component, the daemon automatically translates the
+complete stream by −11.025 kHz and lowers the hardware tuning word by the same
+amount. The offsets cancel at RF, so the frequency reported to the client
+remains the transmitted carrier frequency. Sessions without a dominant DC
+carrier are unchanged. The daemon logs the measured ratio and decision.
+
+This behavior was derived from PowerSDR's captured AM waveform and confirmed
+with a temporary direct-Soapy comparison; see
+[the AM transmit capture analysis](PCAP_AM_TRANSMIT.md). Automatic detection
+avoids depending on client support for optional Soapy device settings.
+
+Live SDR Oxide validation then exercised four raw-I/Q AM transmissions. Each
+prebuffer measured a DC-carrier ratio of `1.000`, automatically enabled the
+11.025 kHz correction, keyed successfully, and completed clean stop/drain and
+session release. Received AM audio sounded good, no samples were clipped or
+limited, and the carrier remained on the requested 28.475 MHz frequency.
+As a negative control, an SDR Oxide USB transmission measured a DC-carrier
+ratio of only `0.011`; translation correctly remained disabled, and the normal
+raw-I/Q USB path keyed and stopped cleanly.
+An SDR Oxide CW transmission measured a ratio of `0.000`, also remained
+untranslated, and produced clean received CW. Together, the USB and CW tests
+show that the AM correction is not being applied indiscriminately to ordinary
+non-AM raw-I/Q transmissions.
+
+SoapySDR does not communicate an application's local AM/USB/LSB demodulator
+selection. The adapter therefore marks its station-control lease as mode-less.
+If the radio's physical microphone PTT is pressed while Soapy is the primary
+owner, the daemon derives the microphone mode from the authoritative hardware
+frequency: LSB on the permitted lower-HF voice bands, USB on 60 meters and the
+permitted voice bands at 10 MHz and above. This fallback applies only to the
+physical microphone. It does not alter Soapy raw-I/Q TX, and it never overrides
+an explicit mode supplied by a mode-aware HTTP/API owner.
+
+Live physical-PTT testing with SDR Oxide as the Soapy primary confirmed this
+fallback: the daemon selected LSB at 7.239 MHz and USB at 28.475 MHz, with the
+10-meter USB transmission independently received on a second radio. Each test
+completed its bounded graceful drain and restored receive operation.
+
 ## Build
 
 On Ubuntu, install the standard adapter dependencies:

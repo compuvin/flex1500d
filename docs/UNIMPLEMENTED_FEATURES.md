@@ -24,7 +24,7 @@ functions performed inside the radio.
 - [ ] Implement an optional CW keyer and sidetone path with reviewed timing,
   station ownership, TX interlocks, and guaranteed unkeying.
 - [ ] Determine whether any useful physical microphone controls remain beyond
-  the implemented PTT, microphone gain, USB/LSB modulation, metering, limiter,
+  the implemented PTT, microphone gain, AM/USB/LSB modulation, metering, limiter,
   and optional speech compression.
 
 ## Accessory and specialized RF connections

@@ -95,5 +95,11 @@ int main(void)
           FLEX1500_NETWORK_TX_OK);
     CHECK(flex1500_network_tx_release(&session, 48) ==
           FLEX1500_NETWORK_TX_OK);
+    flex1500_network_tx_profile am = {
+        FLEX1500_NETWORK_TX_AM, FLEX1500_NETWORK_TX_AUDIO, 50, 48000};
+    CHECK(flex1500_network_tx_acquire(&session, &am, 49, 21000) ==
+          FLEX1500_NETWORK_TX_OK);
+    CHECK(flex1500_network_tx_release(&session, 49) ==
+          FLEX1500_NETWORK_TX_OK);
     return 0;
 }

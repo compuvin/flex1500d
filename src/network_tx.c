@@ -14,7 +14,8 @@ static bool valid_profile(const flex1500_network_tx_profile *profile)
     }
     return (profile->source == FLEX1500_NETWORK_TX_AUDIO &&
             (profile->mode == FLEX1500_NETWORK_TX_USB ||
-             profile->mode == FLEX1500_NETWORK_TX_LSB)) ||
+             profile->mode == FLEX1500_NETWORK_TX_LSB ||
+             profile->mode == FLEX1500_NETWORK_TX_AM)) ||
            (profile->source == FLEX1500_NETWORK_TX_IQ &&
             profile->mode == FLEX1500_NETWORK_TX_IQ_MODE);
 }

@@ -28,6 +28,7 @@ typedef struct flex1500_tx_diagnostics {
     uint64_t stops;
     uint64_t underruns;
     uint64_t clipped_frames;
+    uint64_t limited_frames;
     uint64_t dropped_microphone_frames;
     uint64_t peak_queued_frames;
     uint64_t stop_requested_frames;
@@ -69,6 +70,7 @@ void flex1500_tune_control_record_underrun(flex1500_tune_control *control,
                                            uint64_t count);
 void flex1500_tune_control_record_audio_quality(
     flex1500_tune_control *control, uint64_t clipped_frames,
+    uint64_t limited_frames,
     uint64_t dropped_microphone_frames);
 void flex1500_tune_control_record_graceful_drain(
     flex1500_tune_control *control, uint64_t peak_queued_frames,

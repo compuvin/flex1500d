@@ -424,6 +424,10 @@ static flex1500_service_status live_service_status(
         flex1500_tune_control_diagnostics(tune_control);
     const flex1500_tx_audio_stats *audio =
         flex1500_usb_rx_microphone_tx_stats(receiver);
+    bool audio_tx_active = tune_control != NULL &&
+        tune_control->tx_control != NULL &&
+        (tune_control->tx_control->owner == FLEX1500_TX_OWNER_HTTP ||
+         tune_control->tx_control->owner == FLEX1500_TX_OWNER_PHYSICAL_MIC);
     bool meter_valid = audio != NULL && audio->microphone_frames != 0;
     uint64_t queued_frames = flex1500_usb_rx_tx_pending_frames(receiver);
     uint64_t peak_queued_frames = tx != NULL ? tx->peak_queued_frames : 0;
@@ -481,7 +485,8 @@ static flex1500_service_status live_service_status(
         .tx_stops = tx != NULL ? tx->stops : 0,
         .tx_underruns = tx != NULL ? tx->underruns : 0,
         .tx_clipped_frames = tx != NULL ? tx->clipped_frames : 0,
-        .tx_limited_frames = audio != NULL ? audio->limited_frames : 0,
+        .tx_limited_frames = (tx != NULL ? tx->limited_frames : 0) +
+            (audio_tx_active && audio != NULL ? audio->limited_frames : 0),
         .tx_dropped_microphone_frames =
             tx != NULL ? tx->dropped_microphone_frames : 0,
         .tx_queued_frames = queued_frames,
@@ -557,6 +562,41 @@ typedef struct daemon_tx_context {
     size_t network_tail_bytes;
 } daemon_tx_context;
 
+static bool resolve_physical_tx_mode(daemon_tx_context *tx,
+                                     uint32_t frequency_hz,
+                                     flex1500_tx_mode *mode,
+                                     const char **mode_name)
+{
+    if (tx == NULL || tx->api == NULL || mode == NULL || mode_name == NULL) {
+        return false;
+    }
+    flex1500_station_owner *station = tx->api->station_owner;
+    if (station != NULL && station->held && !station->mode_aware) {
+        bool upper_sideband = false;
+        if (!flex1500_default_ssb_upper_sideband(
+                frequency_hz, &upper_sideband)) {
+            return false;
+        }
+        *mode = upper_sideband ? FLEX1500_TX_USB : FLEX1500_TX_LSB;
+        *mode_name = upper_sideband ? "usb" : "lsb";
+        return true;
+    }
+    if (strcmp(tx->api->rx_mode, "usb") == 0) {
+        *mode = FLEX1500_TX_USB;
+    } else if (strcmp(tx->api->rx_mode, "lsb") == 0) {
+        *mode = FLEX1500_TX_LSB;
+    } else if (strcmp(tx->api->rx_mode, "am") == 0) {
+        *mode = FLEX1500_TX_AM;
+    } else {
+        return false;
+    }
+    *mode_name = tx->api->rx_mode;
+    return *mode == FLEX1500_TX_AM
+        ? flex1500_am_frequency_allowed(frequency_hz)
+        : flex1500_physical_mic_frequency_allowed(
+              frequency_hz, *mode == FLEX1500_TX_USB);
+}
+
 static int daemon_tx_owner_start(void *context, flex1500_tx_owner owner)
 {
     daemon_tx_context *tx = context;
@@ -571,18 +611,37 @@ static int daemon_tx_owner_start(void *context, flex1500_tx_owner owner)
         tx->network_tx->reserved &&
         flex1500_usb_rx_frequency(tx->receiver, &tx->frequency_hz)) {
         bool raw_iq = tx->network_tx->profile.source == FLEX1500_NETWORK_TX_IQ;
-        flex1500_tx_sideband sideband =
+        float dc_carrier_ratio = raw_iq
+            ? flex1500_tx_raw_iq_dc_carrier_ratio(
+                  tx->network_prebuffer, tx->network_prebuffer_bytes)
+            : 0.0f;
+        bool translate_raw_iq = raw_iq &&
+            flex1500_tx_raw_iq_should_translate(
+                tx->network_prebuffer, tx->network_prebuffer_bytes);
+        flex1500_tx_mode mode =
             tx->network_tx->profile.mode == FLEX1500_NETWORK_TX_LSB
-                ? FLEX1500_TX_LSB : FLEX1500_TX_USB;
+                ? FLEX1500_TX_LSB :
+            tx->network_tx->profile.mode == FLEX1500_NETWORK_TX_AM
+                ? FLEX1500_TX_AM : FLEX1500_TX_USB;
         bool frequency_allowed = raw_iq
             ? flex1500_network_iq_frequency_allowed(tx->frequency_hz)
-            : flex1500_physical_mic_frequency_allowed(
-                  tx->frequency_hz, sideband == FLEX1500_TX_USB);
+            : mode == FLEX1500_TX_AM
+                ? flex1500_am_frequency_allowed(tx->frequency_hz)
+                : flex1500_physical_mic_frequency_allowed(
+                      tx->frequency_hz, mode == FLEX1500_TX_USB);
         if (!frequency_allowed) return -1;
         int result = flex1500_usb_rx_network_tx_start(
-            tx->receiver, sideband, tx->network_tx->profile.drive_percent,
-            raw_iq, tx->network_prebuffer, tx->network_prebuffer_bytes);
+            tx->receiver, mode, tx->network_tx->profile.drive_percent,
+            raw_iq, translate_raw_iq, tx->network_prebuffer,
+            tx->network_prebuffer_bytes);
         if (result == 0) {
+            if (raw_iq) {
+                printf("[tx] raw-IQ DC-carrier ratio=%.3f; "
+                       "11.025 kHz translation=%s\n",
+                       dc_carrier_ratio,
+                       translate_raw_iq ? "enabled" : "disabled");
+                fflush(stdout);
+            }
             tx->network_prebuffer_bytes = 0;
             if (tx->tune_control != NULL) {
                 ++tx->tune_control->diagnostics.starts;
@@ -594,23 +653,17 @@ static int daemon_tx_owner_start(void *context, flex1500_tx_owner owner)
         !flex1500_usb_rx_frequency(tx->receiver, &tx->frequency_hz)) {
         return -1;
     }
-    flex1500_tx_sideband sideband;
-    if (strcmp(tx->api->rx_mode, "usb") == 0) {
-        sideband = FLEX1500_TX_USB;
-    } else if (strcmp(tx->api->rx_mode, "lsb") == 0) {
-        sideband = FLEX1500_TX_LSB;
-    } else {
-        return -1;
-    }
-    if (!flex1500_physical_mic_frequency_allowed(
-            tx->frequency_hz, sideband == FLEX1500_TX_USB)) return -1;
+    flex1500_tx_mode mode;
+    const char *mode_name = NULL;
+    if (!resolve_physical_tx_mode(
+            tx, tx->frequency_hz, &mode, &mode_name)) return -1;
     /* Freeze the complete profile before issuing the first TX command. */
-    tx->mode = tx->api->rx_mode;
+    tx->mode = mode_name;
     tx->drive_percent = tx->api->tx_drive_percent;
     tx->microphone_gain_db = tx->api->tx_microphone_gain_db;
     tx->compressor_enabled = tx->api->tx_compressor_enabled;
     int result = flex1500_usb_rx_microphone_tx_start(
-        tx->receiver, sideband, tx->drive_percent,
+        tx->receiver, mode, tx->drive_percent,
         powf(10.0f, (float)tx->microphone_gain_db / 20.0f),
         tx->compressor_enabled);
     if (result == 0 && tx->tune_control != NULL) {
@@ -636,13 +689,14 @@ static int daemon_tx_owner_stop(void *context, flex1500_tx_owner owner,
         flex1500_usb_rx_microphone_tx_stats(tx->receiver);
     uint64_t underruns = stats != NULL ? stats->underrun_frames : 0;
     uint64_t clipped = stats != NULL ? stats->clipped_frames : 0;
+    uint64_t limited = stats != NULL ? stats->limited_frames : 0;
     uint64_t dropped = stats != NULL
         ? stats->dropped_microphone_frames : 0;
     if (tx->tune_control != NULL) {
         ++tx->tune_control->diagnostics.stops;
         flex1500_tune_control_record_underrun(tx->tune_control, underruns);
         flex1500_tune_control_record_audio_quality(
-            tx->tune_control, clipped, dropped);
+            tx->tune_control, clipped, limited, dropped);
         if (stats != NULL) {
             uint64_t peak = stats->peak_queued_frames;
             if (stats->stop_requested_frames > peak) {
@@ -984,22 +1038,24 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
             logged_inputs_known = true;
 
             if (transmit_enabled && microphone_edge) {
-                bool supported_mode = strcmp(api.rx_mode, "usb") == 0 ||
-                                      strcmp(api.rx_mode, "lsb") == 0;
                 uint32_t ptt_frequency = 0;
                 bool frequency_known = flex1500_usb_rx_frequency(
                     receiver, &ptt_frequency);
-                bool frequency_allowed = supported_mode && frequency_known &&
-                    flex1500_physical_mic_frequency_allowed(
-                        ptt_frequency, strcmp(api.rx_mode, "usb") == 0);
+                flex1500_tx_mode physical_mode;
+                const char *physical_mode_name = NULL;
+                bool frequency_allowed = frequency_known &&
+                    resolve_physical_tx_mode(
+                        &tx_context, ptt_frequency, &physical_mode,
+                        &physical_mode_name);
                 flex1500_tx_control_result ptt_result;
                 if (inputs.mic_ptt && tx_control.physical_ptt_armed &&
-                    (!supported_mode || !frequency_known ||
-                     !frequency_allowed)) {
+                    (!frequency_known || !frequency_allowed)) {
                     ++tune_control.diagnostics.rejected_ownership_requests;
                     fprintf(stderr,
-                            "[tx] physical PTT rejected: TX requires USB/LSB and a known frequency inside the configured amateur voice allocations (mode=%s frequency=%s)\n",
-                            api.rx_mode, frequency_known ? "known" : "unset");
+                            "[tx] physical PTT rejected: TX requires AM/USB/LSB and a known frequency inside the configured amateur voice allocations (mode=%s frequency=%s)\n",
+                            physical_mode_name != NULL
+                                ? physical_mode_name : api.rx_mode,
+                            frequency_known ? "known" : "unset");
                 } else {
                     ptt_result = flex1500_tx_control_physical_ptt(
                         &tx_control, inputs.mic_ptt, monotonic_ms());
@@ -1384,7 +1440,8 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
     const flex1500_tx_diagnostics *tx_diagnostics =
         flex1500_tune_control_diagnostics(&tune_control);
     printf("[tx] diagnostics: starts=%llu stops=%llu underruns=%llu "
-           "clipped_frames=%llu dropped_microphone_frames=%llu "
+           "clipped_frames=%llu limited_frames=%llu "
+           "dropped_microphone_frames=%llu "
            "peak_queued_frames=%llu stop_requested_frames=%llu "
            "graceful_drained_frames=%llu graceful_discarded_frames=%llu "
            "graceful_drain_ms=%llu "
@@ -1394,6 +1451,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
            (unsigned long long)tx_diagnostics->stops,
            (unsigned long long)tx_diagnostics->underruns,
            (unsigned long long)tx_diagnostics->clipped_frames,
+           (unsigned long long)tx_diagnostics->limited_frames,
            (unsigned long long)tx_diagnostics->dropped_microphone_frames,
            (unsigned long long)tx_diagnostics->peak_queued_frames,
            (unsigned long long)tx_diagnostics->stop_requested_frames,

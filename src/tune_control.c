@@ -143,10 +143,12 @@ void flex1500_tune_control_record_underrun(flex1500_tune_control *control,
 
 void flex1500_tune_control_record_audio_quality(
     flex1500_tune_control *control, uint64_t clipped_frames,
+    uint64_t limited_frames,
     uint64_t dropped_microphone_frames)
 {
     if (control == NULL) return;
     control->diagnostics.clipped_frames += clipped_frames;
+    control->diagnostics.limited_frames += limited_frames;
     control->diagnostics.dropped_microphone_frames +=
         dropped_microphone_frames;
 }

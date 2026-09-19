@@ -312,8 +312,9 @@ public:
                 stationLease_ = existing->second.lease;
                 stationOwner_ = true;
             } else {
-                const HttpResponse owner = request(host_, port_, "POST",
-                                                   "/v1/control/owner");
+                const HttpResponse owner = request(
+                    host_, port_, "POST", "/v1/control/owner", false, {},
+                    {"X-Flex1500-Mode-Aware: false"});
                 if (owner.status == 201) {
                     stationLease_ = static_cast<uint64_t>(
                         jsonNumber(owner.body, "lease", 0.0));
@@ -777,7 +778,8 @@ private:
                 if (response.status == 200) continue;
                 if (response.status == 410) {
                     const HttpResponse reacquired = request(
-                        host_, port_, "POST", "/v1/control/owner");
+                        host_, port_, "POST", "/v1/control/owner", false, {},
+                        {"X-Flex1500-Mode-Aware: false"});
                     if (reacquired.status == 201) {
                         const double lease = jsonNumber(
                             reacquired.body, "lease", 0.0);

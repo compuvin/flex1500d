@@ -110,10 +110,11 @@ int main(void)
     CHECK(diagnostics->watchdog_stops == 3);
     CHECK(diagnostics->cleanup_failures == 0);
     flex1500_tune_control_record_underrun(&control, 4);
-    flex1500_tune_control_record_audio_quality(&control, 5, 6);
+    flex1500_tune_control_record_audio_quality(&control, 5, 7, 6);
     flex1500_tune_control_record_cleanup_failure(&control);
     CHECK(diagnostics->underruns == 4);
     CHECK(diagnostics->clipped_frames == 5);
+    CHECK(diagnostics->limited_frames == 7);
     CHECK(diagnostics->dropped_microphone_frames == 6);
     CHECK(diagnostics->cleanup_failures == 1);
     return 0;

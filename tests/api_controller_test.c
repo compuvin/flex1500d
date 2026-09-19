@@ -274,8 +274,21 @@ int main(void)
         response, &length) == FLEX1500_API_PUSH_TX_AUDIO);
     CHECK(network_tx.stream_connected && network_tx.buffered_frames == 2);
     CHECK(dispatch(&api,
-        "DELETE /v1/tx/sessions/current HTTP/1.1\r\nX-Flex1500-TX-Lease: 78\r\n\r\n",
+        "DELETE /v1/tx/sessions/current HTTP/1.1\r\n"
+        "X-Flex1500-TX-Lease: 78\r\n\r\n",
         response, &length) == FLEX1500_API_RESPONSE);
+    static const char create_am[] =
+        "POST /v1/tx/sessions HTTP/1.1\r\ncontent-type: application/json\r\n"
+        "content-length: 106\r\n\r\n"
+        "{\"mode\":\"am\",\"source\":\"audio\",\"drive_percent\":50,"
+        "\"sample_rate\":48000,\"sample_format\":\"s16le\",\"channels\":1}";
+    api.next_tx_lease = 79;
+    CHECK(dispatch(&api, create_am, response, &length) ==
+          FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "201 Created") != NULL);
+    CHECK(network_tx.profile.mode == FLEX1500_NETWORK_TX_AM);
+    CHECK(flex1500_network_tx_release(&network_tx, 79) ==
+          FLEX1500_NETWORK_TX_OK);
     CHECK(dispatch(&api,
                    "PUT /v1/radio/tx-drive/75 HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
@@ -347,6 +360,7 @@ int main(void)
     CHECK(dispatch(&api, "POST /v1/control/owner HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
     CHECK(strstr(response, "201 Created") != NULL);
+    CHECK(station_owner.mode_aware);
     CHECK(dispatch(&api,
                    "PUT /v1/radio/frequency/14225000 HTTP/1.1\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
@@ -375,6 +389,18 @@ int main(void)
     CHECK(strstr(response, "410 Gone") != NULL);
     CHECK(dispatch(&api,
                    "DELETE /v1/control/owner HTTP/1.1\r\nX-Flex1500-Control-Lease: 900\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "200 OK") != NULL);
+    CHECK(dispatch(&api,
+                   "POST /v1/control/owner HTTP/1.1\r\n"
+                   "X-Flex1500-Mode-Aware: false\r\n\r\n",
+                   response, &length) == FLEX1500_API_RESPONSE);
+    CHECK(strstr(response, "201 Created") != NULL);
+    CHECK(!station_owner.mode_aware);
+    CHECK(strstr(response, "\"mode_aware\":false") != NULL);
+    CHECK(dispatch(&api,
+                   "DELETE /v1/control/owner HTTP/1.1\r\n"
+                   "X-Flex1500-Control-Lease: 901\r\n\r\n",
                    response, &length) == FLEX1500_API_RESPONSE);
     CHECK(strstr(response, "200 OK") != NULL);
     return 0;

@@ -38,6 +38,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     releases = 0
     stream_closed = threading.Event()
     owner_held = False
+    owner_mode_aware_false = False
     owner_lock = threading.Lock()
 
     def tx_headers_valid(self) -> bool:
@@ -108,6 +109,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         if self.path == "/v1/control/owner":
+            if self.headers.get("X-Flex1500-Mode-Aware") == "false":
+                Handler.owner_mode_aware_false = True
             with Handler.owner_lock:
                 if Handler.owner_held:
                     acquired = False
@@ -193,6 +196,7 @@ def main() -> int:
         expected_bytes = 33000 * 4
         if (Handler.session_count != 1 or Handler.ptt_starts != 1 or
                 Handler.ptt_stops != 1 or Handler.releases != 1 or
+                not Handler.owner_mode_aware_false or
                 len(Handler.tx_bytes) != expected_bytes):
             print("unexpected TX lifecycle:", Handler.session_count,
                   Handler.ptt_starts, Handler.ptt_stops, Handler.releases,

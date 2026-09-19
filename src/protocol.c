@@ -302,6 +302,39 @@ bool flex1500_tune_frequency_allowed(uint32_t frequency_hz)
     return flex1500_physical_mic_frequency_allowed(frequency_hz, true);
 }
 
+bool flex1500_am_frequency_allowed(uint32_t frequency_hz)
+{
+    /* The implemented AM voice passband extends 3 kHz on both sides. */
+    static const struct { uint32_t low, high; } voice_allocations[] = {
+        {1800000, 2000000}, {3500000, 4000000}, {7000000, 7300000},
+        {14000000, 14350000}, {18068000, 18168000},
+        {21000000, 21450000}, {24890000, 24990000},
+        {28000000, 29700000}, {50000000, 54000000},
+    };
+    for (size_t index = 0;
+         index < sizeof(voice_allocations) / sizeof(voice_allocations[0]);
+         ++index) {
+        if (frequency_hz >= voice_allocations[index].low + 3000 &&
+            frequency_hz <= voice_allocations[index].high - 3000) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool flex1500_default_ssb_upper_sideband(uint32_t frequency_hz,
+                                         bool *upper_sideband)
+{
+    if (upper_sideband == NULL) return false;
+    bool upper = frequency_hz >= 10000000 ||
+        (frequency_hz >= 5330000 && frequency_hz <= 5405000);
+    if (!flex1500_physical_mic_frequency_allowed(frequency_hz, upper)) {
+        return false;
+    }
+    *upper_sideband = upper;
+    return true;
+}
+
 bool flex1500_network_iq_frequency_allowed(uint32_t frequency_hz)
 {
     static const struct { uint32_t low, high; } allocations[] = {

@@ -18,9 +18,18 @@ bool flex1500_station_owner_matches(const flex1500_station_owner *owner,
 flex1500_station_owner_result flex1500_station_owner_acquire(
     flex1500_station_owner *owner, uint64_t lease, uint64_t now_ms)
 {
+    return flex1500_station_owner_acquire_with_mode(
+        owner, lease, now_ms, true);
+}
+
+flex1500_station_owner_result flex1500_station_owner_acquire_with_mode(
+    flex1500_station_owner *owner, uint64_t lease, uint64_t now_ms,
+    bool mode_aware)
+{
     if (owner == NULL || lease == 0) return FLEX1500_STATION_OWNER_INVALID;
     if (owner->held) return FLEX1500_STATION_OWNER_BUSY;
     owner->held = true;
+    owner->mode_aware = mode_aware;
     owner->lease = lease;
     owner->renewed_ms = now_ms;
     return FLEX1500_STATION_OWNER_OK;

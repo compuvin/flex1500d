@@ -197,6 +197,32 @@ int main(void)
           FLEX1500_TX_FULL_DRIVE_PEAK + 1.0f);
     CHECK(flex1500_tx_audio_stream_stats(&raw_full_drive)->clipped_frames == 0);
 
+    /* A dominant DC carrier is recognized and translated continuously. */
+    static uint8_t dc_am[4096 * 4];
+    for (size_t frame = 0; frame < 4096; ++frame) {
+        float tone = sinf(2.0f * 3.14159265358979323846f * 1000.0f * frame /
+                          48000.0f);
+        store_i16(&dc_am[frame * 4],
+                  (int16_t)lrintf(12000.0f * (1.0f + 0.3f * tone)));
+        store_i16(&dc_am[frame * 4 + 2], 0);
+    }
+    CHECK(flex1500_tx_raw_iq_dc_carrier_ratio(dc_am, sizeof(dc_am)) > 0.9f);
+    CHECK(flex1500_tx_raw_iq_should_translate(dc_am, sizeof(dc_am)));
+    static uint8_t no_carrier[4096 * 4];
+    CHECK(!flex1500_tx_raw_iq_should_translate(
+        no_carrier, sizeof(no_carrier)));
+    static flex1500_tx_audio_stream translated;
+    static uint8_t translated_output[4096 * 4];
+    CHECK(flex1500_tx_audio_stream_init(
+        &translated, FLEX1500_TX_USB, 50, 1.0f));
+    flex1500_tx_audio_stream_set_raw_iq(&translated, true);
+    flex1500_tx_audio_stream_set_raw_iq_translation(&translated, true);
+    CHECK(flex1500_tx_audio_stream_push_iq16le(
+        &translated, dc_am, sizeof(dc_am)) == 4096);
+    CHECK(flex1500_tx_audio_stream_render_iq16le(
+        &translated, translated_output, 4096) == 4096);
+    CHECK(load_i16(&translated_output[4095 * 4 + 2]) != 0);
+
     flex1500_tx_audio_stream pcm;
     uint8_t pcm_input[4800 * 2] = {0};
     CHECK(flex1500_tx_audio_stream_init(&pcm, FLEX1500_TX_LSB, 50, 1.0f));
@@ -271,5 +297,19 @@ int main(void)
     CHECK(flex1500_tx_audio_stream_stats(&envelope)->clipped_frames == 0);
     CHECK(flex1500_tx_audio_stream_stats(&envelope)->maximum_output_step <
           FLEX1500_TX_FULL_DRIVE_PEAK * 0.2f);
+
+    /* AM silence retains the capture-matched translated carrier. */
+    static flex1500_tx_audio_stream am_stream;
+    static uint8_t am_silence[1200 * 2];
+    static uint8_t am_output[1200 * 4];
+    CHECK(flex1500_tx_audio_stream_init(
+        &am_stream, FLEX1500_TX_AM, 50, 1.0f));
+    CHECK(flex1500_tx_audio_stream_push_pcm16le(
+        &am_stream, am_silence, sizeof(am_silence)) == 1200);
+    CHECK(flex1500_tx_audio_stream_render_iq16le(
+        &am_stream, am_output, 1200) == 1200);
+    CHECK(iq_magnitude_at(am_output, 0) == 0.0f);
+    CHECK(iq_magnitude_at(am_output, 1199) > 6000.0f);
+    CHECK(flex1500_tx_audio_stream_stats(&am_stream)->clipped_frames == 0);
     return EXIT_SUCCESS;
 }

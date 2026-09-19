@@ -49,12 +49,33 @@ int main(void)
     CHECK(usb_negative > usb_positive * 20.0f);
     CHECK(lsb_positive > lsb_negative * 20.0f);
 
+    float am_carrier = tone_response(
+        FLEX1500_TX_AM, 1000.0f, -(float)FLEX1500_TX_AM_IF_HZ);
+    float am_upper = tone_response(
+        FLEX1500_TX_AM, 1000.0f,
+        -(float)FLEX1500_TX_AM_IF_HZ + 1000.0f);
+    float am_lower = tone_response(
+        FLEX1500_TX_AM, 1000.0f,
+        -(float)FLEX1500_TX_AM_IF_HZ - 1000.0f);
+    CHECK(am_carrier > am_upper * 2.0f);
+    CHECK(am_upper > am_carrier * 0.35f);
+    CHECK(fabsf(am_upper - am_lower) < am_upper * 0.01f);
+    flex1500_tx_dsp am;
+    flex1500_tx_dsp_init(&am, FLEX1500_TX_AM);
+    for (int n = 0; n < 1000; ++n) {
+        flex1500_iq_sample sample = flex1500_tx_dsp_process(
+            &am, cosf(2.0f * 3.14159265358979323846f * 1000.0f * n /
+                      48000.0f));
+        float magnitude = hypotf(sample.i, sample.q);
+        CHECK(magnitude >= 0.0f && magnitude <= 1.0001f);
+    }
+
     float dc = tone_response(FLEX1500_TX_USB, 0.0f, 0.0f);
     float below_passband = tone_response(FLEX1500_TX_USB, 50.0f, -50.0f);
     float above_passband = tone_response(FLEX1500_TX_USB, 5000.0f, -5000.0f);
     CHECK(usb_negative > dc * 100.0f);
     CHECK(usb_negative > below_passband * 6.0f);
     CHECK(usb_negative > above_passband * 20.0f);
-    puts("TX DSP sideband tests passed");
+    puts("TX DSP SSB/AM spectral tests passed");
     return EXIT_SUCCESS;
 }

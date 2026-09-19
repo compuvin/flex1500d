@@ -83,7 +83,7 @@ bool flex1500_usb_rx_tune_carrier_active(const flex1500_usb_rx *receiver);
 
 /* Live physical-microphone stream backend; not yet connected to PTT. */
 int flex1500_usb_rx_microphone_tx_start(flex1500_usb_rx *receiver,
-                                       flex1500_tx_sideband sideband,
+                                       flex1500_tx_mode mode,
                                        unsigned int drive_percent,
                                        float microphone_gain,
                                        bool compressor_enabled);
@@ -94,9 +94,10 @@ size_t flex1500_usb_rx_tx_pending_frames(const flex1500_usb_rx *receiver);
 const flex1500_tx_audio_stats *flex1500_usb_rx_microphone_tx_stats(
     const flex1500_usb_rx *receiver);
 int flex1500_usb_rx_network_tx_start(flex1500_usb_rx *receiver,
-                                     flex1500_tx_sideband sideband,
+                                     flex1500_tx_mode mode,
                                      unsigned int drive_percent,
-                                     bool raw_iq, const uint8_t *prebuffer,
+                                     bool raw_iq, bool translate_raw_iq,
+                                     const uint8_t *prebuffer,
                                      size_t bytes);
 size_t flex1500_usb_rx_network_tx_push(flex1500_usb_rx *receiver,
                                       const uint8_t *data, size_t bytes,

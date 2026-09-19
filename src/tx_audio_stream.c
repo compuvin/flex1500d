@@ -30,7 +30,7 @@ static int16_t clamp_i16(float sample, bool *clipped)
 }
 
 bool flex1500_tx_audio_stream_init(flex1500_tx_audio_stream *stream,
-                                   flex1500_tx_sideband sideband,
+                                   flex1500_tx_mode mode,
                                    unsigned int drive_percent,
                                    float microphone_gain)
 {
@@ -44,12 +44,12 @@ bool flex1500_tx_audio_stream_init(flex1500_tx_audio_stream *stream,
     stream->drive_percent = drive_percent;
     stream->microphone_gain = microphone_gain;
     return flex1500_tx_dsp_init_passband(
-        &stream->dsp, sideband, FLEX1500_TX_DEFAULT_LOW_CUT_HZ,
+        &stream->dsp, mode, FLEX1500_TX_DEFAULT_LOW_CUT_HZ,
         FLEX1500_TX_DEFAULT_HIGH_CUT_HZ);
 }
 
 void flex1500_tx_audio_stream_reset(flex1500_tx_audio_stream *stream,
-                                    flex1500_tx_sideband sideband)
+                                    flex1500_tx_mode mode)
 {
     if (stream == NULL) return;
     stream->read_index = 0;
@@ -60,7 +60,7 @@ void flex1500_tx_audio_stream_reset(flex1500_tx_audio_stream *stream,
     stream->previous_output_valid = false;
     stream->previous_output_i = 0.0f;
     stream->previous_output_q = 0.0f;
-    flex1500_tx_dsp_init(&stream->dsp, sideband);
+    flex1500_tx_dsp_init(&stream->dsp, mode);
 }
 
 void flex1500_tx_audio_stream_set_compressor(flex1500_tx_audio_stream *stream,
@@ -81,6 +81,53 @@ void flex1500_tx_audio_stream_set_raw_iq(flex1500_tx_audio_stream *stream,
                                          bool enabled)
 {
     if (stream != NULL) stream->raw_iq = enabled;
+}
+
+void flex1500_tx_audio_stream_set_raw_iq_translation(
+    flex1500_tx_audio_stream *stream, bool enabled)
+{
+    if (stream == NULL) return;
+    stream->translate_raw_iq = enabled;
+    stream->raw_iq_phase = 0.0f;
+}
+
+float flex1500_tx_raw_iq_dc_carrier_ratio(const uint8_t *input, size_t bytes)
+{
+    if (input == NULL || bytes < 4) return 0.0f;
+    const size_t frames = bytes / 4;
+    double sum_i = 0.0, sum_q = 0.0, sum_power = 0.0;
+    for (size_t frame = 0; frame < frames; ++frame) {
+        int16_t i = (int16_t)((uint16_t)input[frame * 4] |
+            ((uint16_t)input[frame * 4 + 1] << 8));
+        int16_t q = (int16_t)((uint16_t)input[frame * 4 + 2] |
+            ((uint16_t)input[frame * 4 + 3] << 8));
+        sum_i += i;
+        sum_q += q;
+        sum_power += (double)i * i + (double)q * q;
+    }
+    if (sum_power <= 0.0) return 0.0f;
+    const double mean_i = sum_i / frames;
+    const double mean_q = sum_q / frames;
+    const double rms = sqrt(sum_power / frames);
+    return (float)(hypot(mean_i, mean_q) / rms);
+}
+
+bool flex1500_tx_raw_iq_should_translate(const uint8_t *input, size_t bytes)
+{
+    if (input == NULL || bytes < 1024 * 4) return false;
+    double sum_power = 0.0;
+    const size_t frames = bytes / 4;
+    for (size_t frame = 0; frame < frames; ++frame) {
+        int16_t i = (int16_t)((uint16_t)input[frame * 4] |
+            ((uint16_t)input[frame * 4 + 1] << 8));
+        int16_t q = (int16_t)((uint16_t)input[frame * 4 + 2] |
+            ((uint16_t)input[frame * 4 + 3] << 8));
+        sum_power += (double)i * i + (double)q * q;
+    }
+    const double normalized_rms =
+        sqrt(sum_power / frames) / 32768.0;
+    return normalized_rms >= 0.02 &&
+        flex1500_tx_raw_iq_dc_carrier_ratio(input, bytes) >= 0.75f;
 }
 
 size_t flex1500_tx_audio_stream_push_pcm16le(
@@ -167,7 +214,23 @@ size_t flex1500_tx_audio_stream_render_iq16le(
         flex1500_iq_sample iq = {0};
         if (stream->count > 0) {
             float microphone = stream->microphone[stream->read_index];
-            if (stream->raw_iq) iq = stream->network_iq[stream->read_index];
+            if (stream->raw_iq) {
+                iq = stream->network_iq[stream->read_index];
+                if (stream->translate_raw_iq) {
+                    const float cosine = cosf(stream->raw_iq_phase);
+                    const float sine = sinf(stream->raw_iq_phase);
+                    iq = (flex1500_iq_sample){
+                        iq.i * cosine + iq.q * sine,
+                        iq.q * cosine - iq.i * sine};
+                    stream->raw_iq_phase += 2.0f * 3.14159265358979323846f *
+                        FLEX1500_TX_AM_IF_HZ / 48000.0f;
+                    if (stream->raw_iq_phase >=
+                        2.0f * 3.14159265358979323846f) {
+                        stream->raw_iq_phase -=
+                            2.0f * 3.14159265358979323846f;
+                    }
+                }
+            }
             stream->read_index =
                 (stream->read_index + 1) % FLEX1500_TX_AUDIO_CAPACITY;
             --stream->count;

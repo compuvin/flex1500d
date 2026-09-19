@@ -166,6 +166,13 @@ disconnect/lease expiry, or daemon recovery. `DELETE /v1/control/owner` is
 rejected while a transmitter operation is active. A foreign or missing lease
 gets `409 station_owned` and cannot alter hardware or transmit.
 
+An adapter for a protocol that cannot communicate operating mode may include
+`X-Flex1500-Mode-Aware: false` only when acquiring this lease. The bundled
+SoapySDR adapter does so. While such an owner is primary, physical microphone
+PTT derives conventional USB/LSB from the authoritative hardware frequency;
+mode-aware HTTP/API owners continue to use their explicitly selected AM, USB,
+or LSB mode. This capability flag does not grant additional authority.
+
 The daemon broadcasts IQ to as many as four consumers. A non-owner implements
 its own tuning and demodulation inside the owner's 48 kHz IQ window; it does not
 send a hardware frequency request. The browser test page and SoapySDR adapter
@@ -266,10 +273,11 @@ meter values and limiter activity. Physical-microphone gain remains a source-
 specific control. Future HTTP and Soapy audio sources should have separate
 source gains and then enter this same compressor, limiter, and meter path.
 
-Physical microphone TX additionally requires USB or LSB and a known frequency
+Physical microphone TX additionally requires AM, USB, or LSB and a known frequency
 inside the daemon's conservative U.S. amateur voice-allocation policy: the
 160, 80, 40, 20, 17, 15, 12, 10, or 6 meter allocation, or the permitted
-60-meter USB spectrum/carriers. This guard is not a substitute for the control
+60-meter USB spectrum/carriers. AM requires 3 kHz of allocation on each side
+of the carrier and is not enabled on 60 meters. This guard is not a substitute for the control
 operator's license-class, subband, emission, power, and geographic obligations.
 The operator remains responsible for legal operation.
 

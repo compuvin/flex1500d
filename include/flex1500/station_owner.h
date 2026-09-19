@@ -18,6 +18,7 @@ typedef enum flex1500_station_owner_result {
 
 typedef struct flex1500_station_owner {
     bool held;
+    bool mode_aware;
     uint64_t lease;
     uint64_t renewed_ms;
 } flex1500_station_owner;
@@ -25,6 +26,9 @@ typedef struct flex1500_station_owner {
 void flex1500_station_owner_init(flex1500_station_owner *owner);
 flex1500_station_owner_result flex1500_station_owner_acquire(
     flex1500_station_owner *owner, uint64_t lease, uint64_t now_ms);
+flex1500_station_owner_result flex1500_station_owner_acquire_with_mode(
+    flex1500_station_owner *owner, uint64_t lease, uint64_t now_ms,
+    bool mode_aware);
 flex1500_station_owner_result flex1500_station_owner_keepalive(
     flex1500_station_owner *owner, uint64_t lease, uint64_t now_ms);
 flex1500_station_owner_result flex1500_station_owner_release(

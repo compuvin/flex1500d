@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "flex1500/protocol.h"
+#include "flex1500/tx_dsp.h"
 
 #include "test_assert.h"
 #include <stdint.h>
@@ -212,6 +213,18 @@ int main(void)
     CHECK(!flex1500_physical_mic_frequency_allowed(10000000, true));
     CHECK(!flex1500_physical_mic_frequency_allowed(10125000, true));
     CHECK(!flex1500_physical_mic_frequency_allowed(27000000, true));
+    CHECK(flex1500_am_frequency_allowed(28475000));
+    CHECK(!flex1500_am_frequency_allowed(28001000));
+    CHECK(!flex1500_am_frequency_allowed(5357000));
+    bool upper_sideband = false;
+    CHECK(flex1500_default_ssb_upper_sideband(7296000, &upper_sideband));
+    CHECK(!upper_sideband);
+    CHECK(flex1500_default_ssb_upper_sideband(5357000, &upper_sideband));
+    CHECK(upper_sideband);
+    CHECK(flex1500_default_ssb_upper_sideband(14225000, &upper_sideband));
+    CHECK(upper_sideband);
+    CHECK(!flex1500_default_ssb_upper_sideband(10000000, &upper_sideband));
+    CHECK(!flex1500_default_ssb_upper_sideband(14225000, NULL));
     CHECK(flex1500_tune_frequency_allowed(28475000));
     CHECK(flex1500_tune_frequency_allowed(5357000));
     CHECK(!flex1500_tune_frequency_allowed(10000000));
@@ -227,6 +240,9 @@ int main(void)
     CHECK(flex1500_usb_tune_frequency_to_tuning_word(
         28475000, 600, &tuning_word));
     CHECK(tuning_word == UINT32_C(0x25f74309));
+    CHECK(flex1500_usb_tune_frequency_to_tuning_word(
+        28475000, FLEX1500_TX_AM_IF_HZ, &tuning_word));
+    CHECK(tuning_word == UINT32_C(0x25f3b416));
     CHECK(!flex1500_usb_tune_frequency_to_tuning_word(
         100000, 1, &tuning_word));
     CHECK(!flex1500_usb_tune_frequency_to_tuning_word(

@@ -190,8 +190,8 @@ Tune carrier have been demonstrated successfully. The basic and RX-tuning
 daemon modes remain receive-only. The distinct transmit-enabled mode prepares
 the TX amplifier path, tracks the PA filter after a frequency becomes known,
 exposes the fixed Tune carrier, and connects physical microphone PTT to live
-USB/LSB modulation through the shared TX controller. Leased HTTP TX sessions
-now accept USB/LSB PCM or guarded complex I/Q through that same controller;
+AM/USB/LSB modulation through the shared TX controller. Leased HTTP TX sessions
+now accept AM/USB/LSB PCM or guarded complex I/Q through that same controller;
 USB PCM and raw-I/Q paths have bounded live dummy-load validation. The
 SoapySDR adapter now maps its optional TX channel into the leased raw-I/Q API;
 that adapter path has exhaustive mock-daemon coverage but still requires a

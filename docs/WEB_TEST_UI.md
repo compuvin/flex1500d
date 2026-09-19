@@ -10,6 +10,11 @@ directly. Its only operations are:
 - `PUT /v1/radio/mode/am|fm|usb|lsb|cw`
 - `GET /v1/stream/iq`
 
+When the daemon is deliberately started in transmit-enabled mode and the page
+owns station control, it also exercises the documented Tune and general TX
+session APIs. Computer-microphone TX supports AM, USB, and LSB. The page still
+never accesses USB or radio hardware directly.
+
 It parses the versioned `F15I` stream in JavaScript and provides receive-only
 AM, FM, USB, LSB, and CW demodulation with DC removal, smoothing, and AGC. CW
 uses a 700 Hz beat note. Mono 48 kHz audio is queued through an `AudioWorklet`.
@@ -36,8 +41,9 @@ the real component shifted recovered speech and made a station near 7,296,000
 Hz sound best with the radio tuned near 7,294,500 Hz. The FIR sideband filters
 replace that shortcut and preserve the expected carrier-frequency dial model.
 
-There is no TX/PTT route, button, sample producer, probe token, or direct radio
-interface in the page.
+Transmit buttons are hidden behind the daemon's transmit-enabled policy and
+shared ownership/state machine. The page contains no standalone probe token or
+direct radio interface.
 
 ## Explicit opt-in
 

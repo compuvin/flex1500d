@@ -60,3 +60,12 @@ jobs:
         run: |
           package=$(find . -maxdepth 1 -name 'flex1500d_*.deb' -print -quit)
           tests/debian_package_lifecycle.sh "$package"
+
+      - name: Upload Release Debian package
+        if: matrix.build_type == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flex1500d-${{ matrix.arch }}-deb
+          path: flex1500d_*.deb
+          if-no-files-found: error
+          retention-days: 30

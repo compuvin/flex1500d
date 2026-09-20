@@ -179,11 +179,14 @@ The browser test page requires a browser with a 48 kHz `AudioContext`.
 
 ### Experimental Debian package
 
-GitHub releases may include an experimental `amd64` package. Install a
-downloaded package and its declared dependencies with:
+GitHub releases may include experimental `amd64` and `arm64` packages. Install
+the package matching the Debian architecture reported by
+`dpkg --print-architecture`, together with its declared dependencies, using:
 
 ```sh
-sudo apt install ./flex1500d_0.2.1_amd64.deb
+sudo apt install ./flex1500d_0.2.2_amd64.deb
+# or, on ARM64:
+sudo apt install ./flex1500d_0.2.2_arm64.deb
 ```
 
 The package installs `flex1500d`, the SoapySDR module, the udev access rule, a

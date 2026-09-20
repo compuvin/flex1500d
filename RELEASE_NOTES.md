@@ -1,5 +1,72 @@
 # Release notes
 
+## v0.2.2 — capture-matched AM and ARM64 package release
+
+This experimental release adds native `arm64` Debian packaging alongside
+`amd64` and incorporates the receive, service, and transmit work completed
+since v0.2.1. It remains intended for technically experienced amateur-radio
+operators using independent frequency, power, modulation, and load monitoring.
+
+The project remains unaffiliated with, unendorsed by, and unsupported by
+FlexRadio Systems. API version 1 remains unauthenticated and unencrypted and
+must not be exposed to an untrusted network or the public internet.
+
+### Highlights
+
+- Added capture-matched AM transmit generation using PowerSDR's measured
+  −11.025 kHz complex carrier and equal hardware-frequency compensation.
+- Added automatic DC-carrier detection and the same compensated translation
+  for Soapy/raw-IQ AM, without requiring client-specific device settings.
+- Added mode-aware physical-microphone AM plus Soapy-primary automatic LSB/USB
+  selection based on the authoritative hardware frequency.
+- Added persistent configuration, packaged receive-mode defaults, and a
+  systemd service that is enabled for future boots but not started during
+  package installation.
+- Added optional `rtl_tcp` receive compatibility with documented fixed 48 kHz
+  RF bandwidth and compatibility upsampling.
+- Hardened transmitter termination and failure-injection coverage, selected
+  the FLEX-1500 main antenna path during TX preparation, and added cumulative
+  limiter diagnostics.
+- Fixed browser microphone startup by waiting for the first accepted audio
+  prebuffer instead of assuming it arrives within a fixed delay.
+- Retained tested Release Debian packages from native GitHub-hosted `amd64`
+  and `arm64` jobs.
+
+### Live validation
+
+KB1JDX validated physical-microphone LSB selection on 40 meters and USB on
+10 meters, with the 10-meter USB transmission received on a second radio.
+Capture-matched daemon AM changed the live result from poor, SSB-like audio to
+clear AM audio. Four SDR Oxide AM transmissions measured a DC-carrier ratio of
+`1.000`, enabled automatic translation, and sounded good at the requested
+28.475 MHz frequency. USB (`0.011`) and CW (`0.000`) negative-control tests
+correctly remained untranslated; received CW was clean. These tests completed
+with clean unkey/session release and zero clipped or limited frames.
+
+### Packages
+
+The release provides experimental Ubuntu 24.04-built Debian packages for
+`amd64` and `arm64`. Each package installs the daemon, SoapySDR module, udev
+rule, default receive configuration, systemd service, and documentation. The
+service is enabled for the next boot but deliberately not started during
+installation. Package lifecycle tests cover install, upgrade-style
+configuration preservation, enablement, removal, and purge behavior.
+
+Packages depend on the shared-library versions available on the build runner;
+build from source on incompatible Debian-family distributions.
+
+### Important limitations
+
+- General TX remains experimental. Perform initial testing into a suitable
+  dummy load and independently monitor every transmission.
+- The API remains unauthenticated and unencrypted.
+- AM correction for opaque raw I/Q is selected from the initial 4,096-frame
+  prebuffer; unusual full-bandwidth signals remain the client's responsibility.
+- SoapySDR TX has been live-tested with SDR Oxide. Other applications, timed
+  bursts, and `END_BURST` operation remain unvalidated.
+- The FLEX-1500 exposes no confirmed forward/reflected-power, SWR, or PA
+  temperature telemetry, so protection still depends on external instruments.
+
 ## v0.2.1 — transmit latency and graceful-stop maintenance release
 
 This experimental maintenance release improves live HTTP and SoapySDR

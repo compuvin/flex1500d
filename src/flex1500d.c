@@ -328,11 +328,13 @@ static int serve_offline(const char *port_text, bool test_page_enabled)
 enum { MAX_IQ_CLIENTS = 4 };
 typedef struct iq_clients {
     int fd[MAX_IQ_CLIENTS];
+    size_t pending_offset[MAX_IQ_CLIENTS];
     int rtl_fd;
     uint32_t rtl_repeat;
     uint8_t rtl_pending[FLEX1500_PUBLISHER_MAX_SAMPLES * 2 * 64];
     size_t rtl_pending_length;
     size_t rtl_pending_offset;
+    bool rtl_source_complete;
 } iq_clients;
 
 static flex1500_publish_result write_iq_clients(
@@ -340,8 +342,10 @@ static flex1500_publish_result write_iq_clients(
 {
     iq_clients *clients = context;
     bool any = false;
+    bool incomplete = false;
     if (clients->rtl_fd >= 0) {
-        if (clients->rtl_pending_length == 0) {
+        if (!clients->rtl_source_complete &&
+            clients->rtl_pending_length == 0) {
             clients->rtl_pending_length = flex1500_rtl_tcp_encode_iq_repeated(
                 bytes, length, clients->rtl_repeat, clients->rtl_pending,
                 sizeof(clients->rtl_pending));
@@ -361,36 +365,67 @@ static flex1500_publish_result write_iq_clients(
             if (result > 0) {
                 clients->rtl_pending_offset += (size_t)result;
                 if (clients->rtl_pending_offset < clients->rtl_pending_length) {
-                    *written = 0;
-                    return FLEX1500_PUBLISH_WOULD_BLOCK;
+                    incomplete = true;
+                } else {
+                    clients->rtl_pending_length = 0;
+                    clients->rtl_pending_offset = 0;
+                    clients->rtl_source_complete = true;
+                    any = true;
                 }
-                clients->rtl_pending_length = 0;
-                clients->rtl_pending_offset = 0;
-                any = true;
             } else if (result < 0 &&
                        (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                *written = 0;
-                return FLEX1500_PUBLISH_WOULD_BLOCK;
+                incomplete = true;
             } else {
                 close(clients->rtl_fd);
                 clients->rtl_fd = -1;
                 clients->rtl_pending_length = 0;
                 clients->rtl_pending_offset = 0;
+                clients->rtl_source_complete = false;
                 printf("[rtl_tcp] client disconnected while streaming\n");
                 fflush(stdout);
             }
+        } else if (clients->rtl_source_complete) {
+            any = true;
         }
     }
     for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i) {
         if (clients->fd[i] < 0) continue;
-        ssize_t result = send(clients->fd[i], bytes, length,
+        if (clients->pending_offset[i] == length) {
+            any = true;
+            continue;
+        }
+        ssize_t result = send(clients->fd[i],
+                              bytes + clients->pending_offset[i],
+                              length - clients->pending_offset[i],
                               MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (result == (ssize_t)length) { any = true; continue; }
+        if (result > 0) {
+            any = true;
+            clients->pending_offset[i] += (size_t)result;
+            if (clients->pending_offset[i] < length) incomplete = true;
+            continue;
+        }
+        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            any = true;
+            incomplete = true;
+            continue;
+        }
         close(clients->fd[i]);
         clients->fd[i] = -1;
+        clients->pending_offset[i] = 0;
     }
-    *written = any ? length : 0;
-    return any ? FLEX1500_PUBLISH_OK : FLEX1500_PUBLISH_DISCONNECTED;
+    if (!any) {
+        *written = 0;
+        return FLEX1500_PUBLISH_DISCONNECTED;
+    }
+    if (incomplete) {
+        *written = 0;
+        return FLEX1500_PUBLISH_WOULD_BLOCK;
+    }
+    for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
+        clients->pending_offset[i] = 0;
+    clients->rtl_source_complete = false;
+    *written = length;
+    return FLEX1500_PUBLISH_OK;
 }
 
 static int api_tune_rx(void *context, uint32_t frequency_hz,
@@ -1269,6 +1304,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                 } else if (send_all(http_client.fd, stream_header,
                                     sizeof(stream_header) - 1) == 0) {
                     iq.fd[slot] = http_client.fd;
+                    iq.pending_offset[slot] = 0;
                     http_client.fd = -1;
                     printf("[stream] IQ client connected in slot %zu\n", slot);
                     fflush(stdout);

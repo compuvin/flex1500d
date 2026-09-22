@@ -33,6 +33,10 @@ option(FLEX1500_BUILD_SOAPYSDR
     "Build the SoapySDR RX/TX adapter"
     ON
 )
+option(FLEX1500_BUILD_CLIENT
+    "Build the initial flex1500 companion client"
+    OFF
+)
 if(FLEX1500_BUILD_SOAPYSDR)
     find_package(SoapySDR 0.8 REQUIRED)
 endif()
@@ -151,6 +155,10 @@ target_compile_options(flex1500-mic-iq-offline PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(flex1500_protocol PUBLIC m)
 target_include_directories(flex1500_protocol PUBLIC include)
 target_compile_options(flex1500_protocol PRIVATE -Wall -Wextra -Wpedantic)
+
+if(FLEX1500_BUILD_CLIENT)
+    add_subdirectory(client)
+endif()
 
 add_library(flex1500_usb_rx STATIC
     src/usb_rx.c

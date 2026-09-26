@@ -41,9 +41,11 @@ Current experimental limitations:
 
 The stream converts the daemon's complex floating-point IQ to the protocol's
 unsigned 8-bit representation and corrects the FLEX-1500 wire Q orientation to
-the conventional orientation expected by SDR clients. It therefore has less
-dynamic range than the native API. The API remains available on its own port
-while `rtl_tcp` is enabled.
+the conventional orientation expected by SDR clients. Per-channel quantization
+error feedback alternates around the half-byte midpoint so silence averages
+exactly 127.5 rather than creating a fixed center-frequency spur. The stream
+still has less dynamic range than the native API. The API remains available on
+its own port while `rtl_tcp` is enabled.
 
 ## Displayed bandwidth warning
 

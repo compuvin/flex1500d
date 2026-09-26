@@ -65,6 +65,19 @@ static uint8_t encode_sample(float value)
     return (uint8_t)lrintf(value * 127.5f + 127.5f);
 }
 
+static uint8_t encode_sample_with_error_feedback(float value, float *error)
+{
+    if (!isfinite(value)) value = 0.0f;
+    if (value < -1.0f) value = -1.0f;
+    if (value > 1.0f) value = 1.0f;
+    float target = value * 127.5f + 127.5f + *error;
+    long encoded = lrintf(target);
+    if (encoded < 0) encoded = 0;
+    if (encoded > 255) encoded = 255;
+    *error = target - (float)encoded;
+    return (uint8_t)encoded;
+}
+
 void flex1500_rtl_tcp_header(uint8_t output[FLEX1500_RTL_TCP_HEADER_SIZE])
 {
     memset(output, 0, FLEX1500_RTL_TCP_HEADER_SIZE);
@@ -216,8 +229,10 @@ size_t flex1500_rtl_tcp_resample_iq(flex1500_rtl_tcp_resampler *resampler,
         float q_sample = interpolate(
             current_q, count, resampler->history_q,
             resampler->history_length, block_start, delayed);
-        output[produced++] = encode_sample(i_sample);
-        output[produced++] = encode_sample(q_sample);
+        output[produced++] = encode_sample_with_error_feedback(
+            i_sample, &resampler->quantization_error_i);
+        output[produced++] = encode_sample_with_error_feedback(
+            q_sample, &resampler->quantization_error_q);
         resampler->phase_numerator += FLEX1500_RTL_TCP_INPUT_RATE;
     }
     resampler->phase_numerator -= block_span;

@@ -103,7 +103,7 @@ static void print_usage(const char *program)
     puts("to trusted LAN hosts with a firewall; authentication is not implemented.");
     puts("Live RX always sends opcode-1219 INITIALIZE. The separately armed");
     puts("tuning mode may also send RX-frequency and RX-filter commands.");
-    puts("Never run live hardware modes without KB1JDX's explicit permission.");
+    puts("Never run live hardware modes without the radio operator's explicit permission.");
     puts("Only --initialize-radio-and-enable-transmit prepares the PA path and");
     puts("enables Tune, physical-mic, and leased HTTP audio/IQ TX. Leases");
     puts("are safety ownership values, not authentication credentials.");

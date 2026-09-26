@@ -82,5 +82,22 @@ int main(void)
         }
     }
     CHECK(changed_between_output_samples);
+
+    flex1500_iq_sample zero[64] = {0};
+    uint8_t zero_frame[FLEX1500_IQ_FRAME_HEADER_SIZE + sizeof(zero)];
+    size_t zero_length = flex1500_encode_iq_frame(
+        9, zero, 64, zero_frame, sizeof(zero_frame));
+    flex1500_rtl_tcp_resampler_reset(&resampler, 250000);
+    uint8_t centered[64 * 6 * 2];
+    size_t centered_length = flex1500_rtl_tcp_resample_iq(
+        &resampler, zero_frame, zero_length, centered, sizeof(centered));
+    CHECK(centered_length == 668);
+    unsigned long sum_i = 0, sum_q = 0;
+    for (size_t i = 0; i < centered_length; i += 2) {
+        sum_i += centered[i];
+        sum_q += centered[i + 1];
+    }
+    CHECK(sum_i * 2 == (centered_length / 2) * 255);
+    CHECK(sum_q * 2 == (centered_length / 2) * 255);
     return 0;
 }

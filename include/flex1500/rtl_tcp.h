@@ -41,6 +41,8 @@ typedef struct flex1500_rtl_tcp_resampler {
     float history_i[FLEX1500_RTL_TCP_RESAMPLER_HISTORY];
     float history_q[FLEX1500_RTL_TCP_RESAMPLER_HISTORY];
     size_t history_length;
+    float quantization_error_i;
+    float quantization_error_q;
 } flex1500_rtl_tcp_resampler;
 
 void flex1500_rtl_tcp_header(uint8_t output[FLEX1500_RTL_TCP_HEADER_SIZE]);

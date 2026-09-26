@@ -40,7 +40,8 @@ Current experimental limitations:
 - slow clients are disconnected rather than being allowed to stall USB RX.
 
 The stream converts the daemon's complex floating-point IQ to the protocol's
-unsigned 8-bit representation and corrects the FLEX-1500 wire Q orientation to
+unsigned 8-bit representation by scaling the daemon's 16-bit ADC-count units
+to full scale, and corrects the FLEX-1500 wire Q orientation to
 the conventional orientation expected by SDR clients. Per-channel quantization
 error feedback alternates around the half-byte midpoint so silence averages
 exactly 127.5 rather than creating a fixed center-frequency spur. The stream

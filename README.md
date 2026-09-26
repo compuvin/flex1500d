@@ -76,6 +76,9 @@ requirements for the daemon's initial release or normal network-SDR use:
   events, then document straight-key and paddle behavior.
 - [ ] Add an optional CW keyer and sidetone path, with reviewed timing,
   transmitter ownership, carrier generation, and safe-unkey behavior.
+- [ ] Migrate the daemon API to conventional I/Q orientation in a coordinated
+  update of receive, transmit, browser, offline-DSP, SoapySDR, rtl_tcp, and
+  companion-client paths, removing protocol-boundary Q corrections afterward.
 
 ## Important safety boundary
 

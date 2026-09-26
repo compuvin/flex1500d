@@ -23,8 +23,8 @@ int main(void)
     CHECK(command.parameter == 28489824);
 
     const flex1500_iq_sample samples[] = {
-        {.i = -1.0f, .q = 0.0f},
-        {.i = 1.0f, .q = 0.5f},
+        {.i = -32768.0f, .q = 0.0f},
+        {.i = 32768.0f, .q = 16384.0f},
     };
     uint8_t framed[64];
     size_t framed_length = flex1500_encode_iq_frame(
@@ -62,7 +62,7 @@ int main(void)
 
     flex1500_iq_sample ramp[64];
     for (size_t i = 0; i < 64; ++i) {
-        ramp[i].i = (float)i / 64.0f;
+        ramp[i].i = 32768.0f * (float)i / 64.0f;
         ramp[i].q = 0.0f;
     }
     uint8_t ramp_frame[FLEX1500_IQ_FRAME_HEADER_SIZE + sizeof(ramp)];

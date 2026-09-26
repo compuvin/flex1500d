@@ -4,17 +4,20 @@
 #include "flex1500/client/audio_ring.hpp"
 #include "flex1500/client/iq_stream.hpp"
 #include "flex1500/client/pipewire_source.hpp"
+#include "flex1500/client/rig_control.hpp"
 extern "C" {
 #include "flex1500/dsp.h"
 }
 
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <csignal>
 #include <cstdint>
 #include <exception>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -24,6 +27,7 @@ extern "C" {
 namespace {
 
 std::atomic_bool stop_requested{false};
+constexpr float pipewire_receive_gain = 0.1f;
 
 void request_stop(int)
 {
@@ -32,7 +36,8 @@ void request_stop(int)
 
 void usage(const char *program)
 {
-    std::cout << "Usage: " << program << " [--host HOST] [--port PORT]\n"
+    std::cout << "Usage: " << program
+              << " [--host HOST] [--port PORT] [--rigctl-port PORT]\n"
               << "       " << program << " --version\n\n"
               << "Connects to flex1500d, acquires station control when "
                  "available, and renews it until stopped.\n";
@@ -71,8 +76,13 @@ std::optional<std::uint64_t> json_unsigned(const std::string &json,
     if (position == std::string::npos) return std::nullopt;
     position = json.find(':', position + key.size());
     if (position == std::string::npos) return std::nullopt;
-    position = json.find_first_of("0123456789", position + 1);
-    if (position == std::string::npos) return std::nullopt;
+    ++position;
+    while (position < json.size() &&
+           std::isspace(static_cast<unsigned char>(json[position])))
+        ++position;
+    if (position == json.size() ||
+        !std::isdigit(static_cast<unsigned char>(json[position])))
+        return std::nullopt;
     std::size_t consumed = 0;
     const std::uint64_t value = std::stoull(json.substr(position), &consumed);
     return consumed == 0 ? std::nullopt
@@ -110,24 +120,92 @@ public:
         const auto revision = json_string(status.body, "git_revision")
                                   .value_or("unknown");
         const auto model = json_string(radio.body, "model").value_or("radio");
+        const auto frequency = json_unsigned(radio.body, "frequency_hz");
+        const auto mode = json_string(radio.body, "rx_mode").value_or("am");
+        const auto bandwidth = json_unsigned(radio.body, "rx_bandwidth_hz")
+                                   .value_or(6000);
         std::cout << "[daemon] connected to " << host_ << "; flex1500d "
                   << version << " (" << revision << ")\n";
         std::cout << "[radio] " << model;
-        if (const auto frequency = json_unsigned(radio.body, "frequency_hz"))
+        if (frequency)
             std::cout << " at " << *frequency << " Hz";
-        if (const auto mode = json_string(radio.body, "rx_mode"))
-            mode_ = *mode;
-        std::cout << ' ' << mode_;
+        std::cout << ' ' << mode;
         std::cout << '\n';
 
+        std::lock_guard<std::mutex> lock(mutex_);
+        frequency_hz_ = frequency.value_or(0);
+        mode_ = mode;
+        bandwidth_hz_ = static_cast<std::uint32_t>(bandwidth);
         acquire();
         connected_ = true;
     }
 
-    const std::string &mode() const { return mode_; }
+    std::string mode() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return mode_;
+    }
+
+    flex1500::client::RigState rig_state() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::string presented_mode = mode_;
+        for (char &character : presented_mode)
+            character = static_cast<char>(std::toupper(
+                static_cast<unsigned char>(character)));
+        return {frequency_hz_, presented_mode, bandwidth_hz_, lease_.has_value()};
+    }
+
+    bool set_frequency(std::uint64_t frequency_hz)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lease_) return false;
+        const auto response = client_.request(
+            "PUT", "/v1/radio/frequency/" + std::to_string(frequency_hz),
+            lease_headers());
+        if (response.status < 200 || response.status >= 300) return false;
+        frequency_hz_ = frequency_hz;
+        std::cout << "[rig] frequency set to " << frequency_hz << " Hz\n";
+        return true;
+    }
+
+    bool set_mode(const std::string &mode, std::int32_t bandwidth_hz)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lease_) return false;
+        std::string api_mode = mode;
+        for (char &character : api_mode)
+            character = static_cast<char>(std::tolower(
+                static_cast<unsigned char>(character)));
+        const std::uint32_t previous_bandwidth = bandwidth_hz_;
+        const auto mode_response = client_.request(
+            "PUT", "/v1/radio/mode/" + api_mode, lease_headers());
+        if (mode_response.status < 200 || mode_response.status >= 300)
+            return false;
+        mode_ = api_mode;
+        if (const auto applied = json_unsigned(mode_response.body,
+                                               "rx_bandwidth_hz"))
+            bandwidth_hz_ = static_cast<std::uint32_t>(*applied);
+        const std::int32_t requested_bandwidth = bandwidth_hz == -1
+            ? static_cast<std::int32_t>(previous_bandwidth) : bandwidth_hz;
+        if (requested_bandwidth > 0) {
+            const auto bandwidth_response = client_.request(
+                "PUT", "/v1/radio/bandwidth/" +
+                           std::to_string(requested_bandwidth),
+                lease_headers());
+            if (bandwidth_response.status < 200 ||
+                bandwidth_response.status >= 300)
+                return false;
+            bandwidth_hz_ = static_cast<std::uint32_t>(requested_bandwidth);
+        }
+        std::cout << "[rig] mode set to " << mode << "; bandwidth "
+                  << bandwidth_hz_ << " Hz\n";
+        return true;
+    }
 
     void maintain()
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         if (!connected_) return;
         if (!lease_) {
             acquire();
@@ -146,6 +224,7 @@ public:
 
     void release() noexcept
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         if (!lease_) return;
         try {
             const auto response = client_.request(
@@ -199,10 +278,13 @@ private:
 
     std::string host_;
     flex1500::client::HttpClient client_;
+    mutable std::mutex mutex_;
     std::optional<std::uint64_t> lease_;
     bool connected_ = false;
     bool reported_receive_only_ = false;
     std::string mode_ = "am";
+    std::uint64_t frequency_hz_ = 0;
+    std::uint32_t bandwidth_hz_ = 6000;
 };
 
 flex1500_demod_mode demod_mode(const std::string &name)
@@ -219,6 +301,7 @@ int main(int argc, char **argv)
 {
     std::string host = "127.0.0.1";
     std::uint16_t port = 15000;
+    std::uint16_t rigctl_port = 4532;
 
     try {
         for (int index = 1; index < argc; ++index) {
@@ -238,6 +321,10 @@ int main(int argc, char **argv)
             }
             if (argument == "--port" && index + 1 < argc) {
                 port = parse_port(argv[++index]);
+                continue;
+            }
+            if (argument == "--rigctl-port" && index + 1 < argc) {
+                rigctl_port = parse_port(argv[++index]);
                 continue;
             }
             throw std::runtime_error("unknown or incomplete option: " +
@@ -260,18 +347,54 @@ int main(int argc, char **argv)
         if (!flex1500_dsp_init(&dsp, &dsp_config))
             throw std::runtime_error("initialize receive DSP failed");
 
+        flex1500::client::RigControlServer rig(
+            rigctl_port,
+            {
+                [&session] { return session.rig_state(); },
+                [&session](std::uint64_t frequency) {
+                    return session.set_frequency(frequency);
+                },
+                [&session](const std::string &mode, std::int32_t bandwidth) {
+                    return session.set_mode(mode, bandwidth);
+                },
+            });
+        rig.start();
+        std::cout << "[rig] Hamlib-compatible control ready on "
+                  << "127.0.0.1:" << rigctl_port << '\n';
+
         flex1500::client::IqStream iq(host, port);
         std::thread receive_thread([&] {
+            std::string active_mode = session.mode();
             while (!stop_requested.load()) {
                 try {
                     iq.connect();
                     std::cout << "[audio] RX IQ stream connected\n";
                     while (!stop_requested.load()) {
-                        const auto samples = iq.read_frame();
+                        auto samples = iq.read_frame();
+                        // The FLEX/native API Q orientation is opposite the
+                        // conventional complex spectrum used by client-side
+                        // USB/LSB demodulation.  Match the established Soapy
+                        // and rtl_tcp boundary conversion.
+                        for (auto &sample : samples) sample.q = -sample.q;
+                        const std::string requested_mode = session.mode();
+                        if (requested_mode != active_mode) {
+                            const flex1500_dsp_config updated = {
+                                demod_mode(requested_mode), 48000.0f, 0.0f,
+                                true,
+                            };
+                            if (!flex1500_dsp_init(&dsp, &updated))
+                                throw std::runtime_error(
+                                    "change receive DSP mode failed");
+                            active_mode = requested_mode;
+                            std::cout << "[audio] receive DSP changed to "
+                                      << active_mode << '\n';
+                        }
                         std::vector<float> demodulated(samples.size());
                         const std::size_t count = flex1500_dsp_process(
                             &dsp, samples.data(), samples.size(),
                             demodulated.data(), demodulated.size());
+                        for (std::size_t index = 0; index < count; ++index)
+                            demodulated[index] *= pipewire_receive_gain;
                         audio.push(demodulated.data(), count);
                     }
                 } catch (const std::exception &error) {
@@ -292,6 +415,7 @@ int main(int argc, char **argv)
         }
         iq.close();
         receive_thread.join();
+        rig.stop();
         pipewire.stop();
         std::cout << "[audio] RX stopped; dropped=" << audio.dropped()
                   << " underrun=" << audio.underruns() << '\n';

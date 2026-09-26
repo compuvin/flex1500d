@@ -11,6 +11,7 @@
 enum { RESAMPLER_RADIUS = 8, RESAMPLER_PHASES = 1024 };
 
 static const double PI = 3.14159265358979323846;
+static const float IQ_FULL_SCALE = 32768.0f;
 static float resampler_weights[RESAMPLER_PHASES][RESAMPLER_RADIUS * 2 + 1];
 static bool resampler_weights_ready;
 
@@ -60,6 +61,7 @@ static float load_f32le(const uint8_t input[4])
 static uint8_t encode_sample(float value)
 {
     if (!isfinite(value)) value = 0.0f;
+    value /= IQ_FULL_SCALE;
     if (value < -1.0f) value = -1.0f;
     if (value > 1.0f) value = 1.0f;
     return (uint8_t)lrintf(value * 127.5f + 127.5f);
@@ -68,6 +70,7 @@ static uint8_t encode_sample(float value)
 static uint8_t encode_sample_with_error_feedback(float value, float *error)
 {
     if (!isfinite(value)) value = 0.0f;
+    value /= IQ_FULL_SCALE;
     if (value < -1.0f) value = -1.0f;
     if (value > 1.0f) value = 1.0f;
     float target = value * 127.5f + 127.5f + *error;

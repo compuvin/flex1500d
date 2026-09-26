@@ -103,7 +103,7 @@ static void print_usage(const char *program)
     puts("to trusted LAN hosts with a firewall; authentication is not implemented.");
     puts("Live RX always sends opcode-1219 INITIALIZE. The separately armed");
     puts("tuning mode may also send RX-frequency and RX-filter commands.");
-    puts("Never run live hardware modes without KB1JDX's explicit permission.");
+    puts("Never run live hardware modes without the radio operator's explicit permission.");
     puts("Only --initialize-radio-and-enable-transmit prepares the PA path and");
     puts("enables Tune, physical-mic, and leased HTTP audio/IQ TX. Leases");
     puts("are safety ownership values, not authentication credentials.");
@@ -330,12 +330,29 @@ typedef struct iq_clients {
     int fd[MAX_IQ_CLIENTS];
     size_t pending_offset[MAX_IQ_CLIENTS];
     int rtl_fd;
-    uint32_t rtl_repeat;
+    flex1500_rtl_tcp_resampler rtl_resampler;
     uint8_t rtl_pending[FLEX1500_PUBLISHER_MAX_SAMPLES * 2 * 64];
     size_t rtl_pending_length;
     size_t rtl_pending_offset;
     bool rtl_source_complete;
 } iq_clients;
+
+static bool iq_clients_connected(const iq_clients *clients)
+{
+    if (clients->rtl_fd >= 0) return true;
+    for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
+        if (clients->fd[i] >= 0) return true;
+    return false;
+}
+
+static void begin_fresh_receive_stream(flex1500_iq_ring *ring,
+                                       flex1500_iq_publisher *publisher)
+{
+    flex1500_iq_ring_clear(ring);
+    flex1500_iq_publisher_disconnect(publisher);
+    printf("[stream] discarded stale buffered IQ for first receive client\n");
+    fflush(stdout);
+}
 
 static flex1500_publish_result write_iq_clients(
     void *context, const uint8_t *bytes, size_t length, size_t *written)
@@ -346,8 +363,8 @@ static flex1500_publish_result write_iq_clients(
     if (clients->rtl_fd >= 0) {
         if (!clients->rtl_source_complete &&
             clients->rtl_pending_length == 0) {
-            clients->rtl_pending_length = flex1500_rtl_tcp_encode_iq_repeated(
-                bytes, length, clients->rtl_repeat, clients->rtl_pending,
+            clients->rtl_pending_length = flex1500_rtl_tcp_resample_iq(
+                &clients->rtl_resampler, bytes, length, clients->rtl_pending,
                 sizeof(clients->rtl_pending));
             clients->rtl_pending_offset = 0;
             if (clients->rtl_pending_length == 0) {
@@ -363,6 +380,7 @@ static flex1500_publish_result write_iq_clients(
                 clients->rtl_pending + clients->rtl_pending_offset,
                 remaining, MSG_NOSIGNAL | MSG_DONTWAIT);
             if (result > 0) {
+                any = true;
                 clients->rtl_pending_offset += (size_t)result;
                 if (clients->rtl_pending_offset < clients->rtl_pending_length) {
                     incomplete = true;
@@ -374,6 +392,7 @@ static flex1500_publish_result write_iq_clients(
                 }
             } else if (result < 0 &&
                        (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                any = true;
                 incomplete = true;
             } else {
                 close(clients->rtl_fd);
@@ -867,7 +886,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
     putchar('\n');
     fflush(stdout);
     iq_clients iq = {
-        .fd = {-1, -1, -1, -1}, .rtl_fd = -1, .rtl_repeat = 1,
+        .fd = {-1, -1, -1, -1}, .rtl_fd = -1,
     };
     flex1500_rtl_tcp_parser rtl_parser = {0};
     int tx_client = -1;
@@ -1141,6 +1160,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
         if (rtl_listener >= 0 && iq.rtl_fd < 0) {
             int client = accept(rtl_listener, NULL, NULL);
             if (client >= 0) {
+                bool first_receive_client = !iq_clients_connected(&iq);
                 uint8_t header[FLEX1500_RTL_TCP_HEADER_SIZE];
                 flex1500_rtl_tcp_header(header);
                 if (send_all(client, (const char *)header, sizeof(header)) != 0 ||
@@ -1148,8 +1168,11 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                           fcntl(client, F_GETFL) | O_NONBLOCK) < 0) {
                     close(client);
                 } else {
+                    if (first_receive_client)
+                        begin_fresh_receive_stream(&ring, &publisher);
                     iq.rtl_fd = client;
-                    iq.rtl_repeat = 1;
+                    flex1500_rtl_tcp_resampler_reset(
+                        &iq.rtl_resampler, FLEX1500_RTL_TCP_INPUT_RATE);
                     iq.rtl_pending_length = 0;
                     iq.rtl_pending_offset = 0;
                     memset(&rtl_parser, 0, sizeof(rtl_parser));
@@ -1195,15 +1218,18 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                     } else if (command.id ==
                                FLEX1500_RTL_TCP_SET_SAMPLE_RATE) {
                         if (command.parameter >= 48000 &&
-                            command.parameter <= 3072000 &&
-                            command.parameter % 48000 == 0) {
-                            iq.rtl_repeat = command.parameter / 48000;
-                            printf("[rtl_tcp] output rate set to %u sample/s by %ux compatibility upsampling; RF bandwidth remains 48000 Hz\n",
-                                   command.parameter, iq.rtl_repeat);
+                            command.parameter <= 3072000) {
+                            flex1500_rtl_tcp_resampler_reset(
+                                &iq.rtl_resampler, command.parameter);
+                            iq.rtl_pending_length = 0;
+                            iq.rtl_pending_offset = 0;
+                            iq.rtl_source_complete = false;
+                            printf("[rtl_tcp] output rate set to %u sample/s using filtered compatibility resampling; RF bandwidth remains 48000 Hz\n",
+                                   command.parameter);
                             fflush(stdout);
                         } else {
                             fprintf(stderr,
-                                    "[rtl_tcp] sample rate %u rejected; supported rates are integer multiples of 48000 through 3072000\n",
+                                    "[rtl_tcp] sample rate %u rejected; supported range is 48000 through 3072000\n",
                                     command.parameter);
                         }
                     }
@@ -1303,6 +1329,8 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                     (void)send_all(http_client.fd, full, sizeof(full) - 1);
                 } else if (send_all(http_client.fd, stream_header,
                                     sizeof(stream_header) - 1) == 0) {
+                    if (!iq_clients_connected(&iq))
+                        begin_fresh_receive_stream(&ring, &publisher);
                     iq.fd[slot] = http_client.fd;
                     iq.pending_offset[slot] = 0;
                     http_client.fd = -1;
@@ -1428,10 +1456,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
             }
         }
 
-        bool have_iq_client = false;
-        for (size_t i = 0; i < MAX_IQ_CLIENTS; ++i)
-            have_iq_client = have_iq_client || iq.fd[i] >= 0;
-        have_iq_client = have_iq_client || iq.rtl_fd >= 0;
+        bool have_iq_client = iq_clients_connected(&iq);
         if (have_iq_client) {
             for (;;) {
                 flex1500_publish_result publish_result =

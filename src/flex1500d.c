@@ -330,7 +330,7 @@ typedef struct iq_clients {
     int fd[MAX_IQ_CLIENTS];
     size_t pending_offset[MAX_IQ_CLIENTS];
     int rtl_fd;
-    uint32_t rtl_repeat;
+    flex1500_rtl_tcp_resampler rtl_resampler;
     uint8_t rtl_pending[FLEX1500_PUBLISHER_MAX_SAMPLES * 2 * 64];
     size_t rtl_pending_length;
     size_t rtl_pending_offset;
@@ -346,8 +346,8 @@ static flex1500_publish_result write_iq_clients(
     if (clients->rtl_fd >= 0) {
         if (!clients->rtl_source_complete &&
             clients->rtl_pending_length == 0) {
-            clients->rtl_pending_length = flex1500_rtl_tcp_encode_iq_repeated(
-                bytes, length, clients->rtl_repeat, clients->rtl_pending,
+            clients->rtl_pending_length = flex1500_rtl_tcp_resample_iq(
+                &clients->rtl_resampler, bytes, length, clients->rtl_pending,
                 sizeof(clients->rtl_pending));
             clients->rtl_pending_offset = 0;
             if (clients->rtl_pending_length == 0) {
@@ -867,7 +867,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
     putchar('\n');
     fflush(stdout);
     iq_clients iq = {
-        .fd = {-1, -1, -1, -1}, .rtl_fd = -1, .rtl_repeat = 1,
+        .fd = {-1, -1, -1, -1}, .rtl_fd = -1,
     };
     flex1500_rtl_tcp_parser rtl_parser = {0};
     int tx_client = -1;
@@ -1149,7 +1149,8 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                     close(client);
                 } else {
                     iq.rtl_fd = client;
-                    iq.rtl_repeat = 1;
+                    flex1500_rtl_tcp_resampler_reset(
+                        &iq.rtl_resampler, FLEX1500_RTL_TCP_INPUT_RATE);
                     iq.rtl_pending_length = 0;
                     iq.rtl_pending_offset = 0;
                     memset(&rtl_parser, 0, sizeof(rtl_parser));
@@ -1195,15 +1196,18 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
                     } else if (command.id ==
                                FLEX1500_RTL_TCP_SET_SAMPLE_RATE) {
                         if (command.parameter >= 48000 &&
-                            command.parameter <= 3072000 &&
-                            command.parameter % 48000 == 0) {
-                            iq.rtl_repeat = command.parameter / 48000;
-                            printf("[rtl_tcp] output rate set to %u sample/s by %ux compatibility upsampling; RF bandwidth remains 48000 Hz\n",
-                                   command.parameter, iq.rtl_repeat);
+                            command.parameter <= 3072000) {
+                            flex1500_rtl_tcp_resampler_reset(
+                                &iq.rtl_resampler, command.parameter);
+                            iq.rtl_pending_length = 0;
+                            iq.rtl_pending_offset = 0;
+                            iq.rtl_source_complete = false;
+                            printf("[rtl_tcp] output rate set to %u sample/s using filtered compatibility resampling; RF bandwidth remains 48000 Hz\n",
+                                   command.parameter);
                             fflush(stdout);
                         } else {
                             fprintf(stderr,
-                                    "[rtl_tcp] sample rate %u rejected; supported rates are integer multiples of 48000 through 3072000\n",
+                                    "[rtl_tcp] sample rate %u rejected; supported range is 48000 through 3072000\n",
                                     command.parameter);
                         }
                     }

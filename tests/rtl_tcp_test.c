@@ -45,5 +45,42 @@ int main(void)
     CHECK(repeated[2] == 0 && repeated[3] == 128);
     CHECK(repeated[4] == 255 && repeated[5] == 64);
     CHECK(repeated[6] == 255 && repeated[7] == 64);
+
+    flex1500_rtl_tcp_resampler resampler;
+    flex1500_rtl_tcp_resampler_reset(&resampler, 250000);
+    uint8_t resampled[32];
+    size_t resampled_length = flex1500_rtl_tcp_resample_iq(
+        &resampler, framed, framed_length, resampled, sizeof(resampled));
+    CHECK(resampled_length == 22);
+    CHECK(resampler.output_rate == 250000);
+
+    /* State and the fractional phase continue across frame boundaries. */
+    resampled_length = flex1500_rtl_tcp_resample_iq(
+        &resampler, framed, framed_length, resampled, sizeof(resampled));
+    CHECK(resampled_length == 20);
+    CHECK(resampler.input_samples == 4);
+
+    flex1500_iq_sample ramp[64];
+    for (size_t i = 0; i < 64; ++i) {
+        ramp[i].i = (float)i / 64.0f;
+        ramp[i].q = 0.0f;
+    }
+    uint8_t ramp_frame[FLEX1500_IQ_FRAME_HEADER_SIZE + sizeof(ramp)];
+    size_t ramp_length = flex1500_encode_iq_frame(
+        8, ramp, 64, ramp_frame, sizeof(ramp_frame));
+    flex1500_rtl_tcp_resampler_reset(&resampler, 960000);
+    uint8_t filtered[64 * 20 * 2];
+    size_t filtered_length = flex1500_rtl_tcp_resample_iq(
+        &resampler, ramp_frame, ramp_length, filtered, sizeof(filtered));
+    CHECK(filtered_length == sizeof(filtered));
+    bool changed_between_output_samples = false;
+    for (size_t i = 2; i < filtered_length; i += 2) {
+        if (filtered[i] != filtered[i - 2] ||
+            filtered[i + 1] != filtered[i - 1]) {
+            changed_between_output_samples = true;
+            break;
+        }
+    }
+    CHECK(changed_between_output_samples);
     return 0;
 }

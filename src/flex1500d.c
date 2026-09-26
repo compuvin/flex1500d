@@ -363,6 +363,7 @@ static flex1500_publish_result write_iq_clients(
                 clients->rtl_pending + clients->rtl_pending_offset,
                 remaining, MSG_NOSIGNAL | MSG_DONTWAIT);
             if (result > 0) {
+                any = true;
                 clients->rtl_pending_offset += (size_t)result;
                 if (clients->rtl_pending_offset < clients->rtl_pending_length) {
                     incomplete = true;
@@ -374,6 +375,7 @@ static flex1500_publish_result write_iq_clients(
                 }
             } else if (result < 0 &&
                        (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                any = true;
                 incomplete = true;
             } else {
                 close(clients->rtl_fd);

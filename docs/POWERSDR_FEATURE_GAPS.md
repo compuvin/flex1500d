@@ -81,7 +81,7 @@ station ownership.
 
 - [x] Document a recommended client-side method for recording demodulated
   audio from the API. (See the
-  [companion client design](COMPANION_CLIENT_DESIGN.md).) (client)
+  [client integration guide](CLIENT_INTEGRATION_GUIDE.md).) (client)
 - [x] Document a recommended client-side method for recording and replaying raw
   I/Q, including sample format and metadata needed for correct tuning. (See the
   [raw I/Q interoperability guide](RAW_IQ_INTEROPERABILITY.md).)
@@ -89,16 +89,21 @@ station ownership.
 
 ## Integration with established station software
 
-- [ ] Add or document a Hamlib-compatible rig-control bridge for logging,
+- [x] Add or document a Hamlib-compatible rig-control bridge for logging,
   contest, and digital-mode applications. (client)
+  (See: [thin-client documentation](../client/README.md) and
+  [thin-client testing](COMPANION_CLIENT_TESTING.md).)
 - [ ] Evaluate whether a limited CAT compatibility layer would materially
   improve support for software that cannot use Hamlib, SoapySDR, or the native
   HTTP API. (client)
-- [ ] Document PipeWire or PulseAudio integration as the Linux equivalent of
+- [x] Document PipeWire or PulseAudio integration as the Linux equivalent of
   PowerSDR's Virtual Audio Cable workflow. (client)
-- [ ] Document representative digital-mode operation with external software;
+  (See: [thin-client documentation](../client/README.md) and the
+  [client integration guide](CLIENT_INTEGRATION_GUIDE.md).)
+- [x] Document representative digital-mode operation with external software;
   modulation, decoding, logging, and message automation remain client duties.
   (daemon+client)
+  (See: [thin-client testing](COMPANION_CLIENT_TESTING.md).)
 - [ ] Test additional established SDR applications for receive, transmit, and
   station-ownership interoperability. (daemon+client)
 

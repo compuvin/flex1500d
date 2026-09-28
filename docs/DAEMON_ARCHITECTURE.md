@@ -1,49 +1,141 @@
-# flex1500d receive architecture
+# flex1500d daemon architecture
 
-## Internal boundaries
+`flex1500d` is the single process that owns the FLEX-1500 USB device, applies
+radio-control policy, and exposes receive and explicitly enabled transmit
+services to network clients. It is live-tested beta software. The normal
+configuration is receive-only with tuning enabled; transmit facilities exist
+only when the operator deliberately selects `mode=transmit`.
 
-The HTTP-facing policy is implemented by the radio-independent API controller
-in `src/api.c`. It owns route dispatch, receive-mode state, capability gates,
-and HTTP/JSON responses. It has no libusb or socket dependency.
+This document describes component boundaries and runtime data flow. Wire-level
+routes and formats are documented in the [network API](NETWORK_API.md), while
+operating and safety procedures are in the
+[transmit operator guide](TX_OPERATOR_GUIDE.md).
 
-The daemon in `src/flex1500d.c` owns LAN sockets, IQ-client lifetime, and
-live status snapshots. Live RX supplies the controller one narrow callback for
-an approved receive-frequency operation; the callback is the only connection
-from API policy to the concrete USB RX backend. The offline server supplies no
-radio callback, so its frequency route cannot invoke hardware behavior.
+## Process overview
 
 ```text
-HTTP socket -> API controller -> RX-tune callback -> USB RX backend
-                  |
-                  +-> response/status policy
-
-USB IQ -> ring/publisher -> IQ client socket
+                              +---------------- browser test page
+                              |
+FLEX-1500                     |  HTTP API / F15I IQ / leased TX
+ USB  <->  USB backend  <->  daemon event loop  <-> network clients
+                              |                         |
+                              |                         +-- SoapySDR adapter
+                              |                         +-- companion client
+                              |                             -> PipeWire/Hamlib
+                              |
+                              +---------------- rtl_tcp compatibility client
 ```
 
-Transmit research sources are not linked through the controller, callback, or
-daemon. Representative TX/PTT paths remain ordinary 404 responses.
+The daemon is deliberately the only component that understands the radio's
+reverse-engineered USB protocol. The browser page, SoapySDR adapter,
+`rtl_tcp` clients, and companion client use network interfaces and never open
+the FLEX-1500 directly.
 
-## Current implementation
+## Configuration and operating modes
 
-The daemon executable is intentionally offline by default. It now provides:
+Startup policy is assembled from conservative built-in defaults, an optional
+configuration file, and command-line overrides. The current modes are:
 
-- A JSON status representation.
-- An offline `iq_s16le` capture-analysis path.
-- Incremental raw I/Q statistics.
-- Sentinel-frame detection.
-- Adaptive DC estimation and subtraction.
-- A bounded complex-float ring buffer with drop accounting.
+- `offline`: serve offline API/UI responses without opening USB;
+- `receive`: initialize the radio and publish receive I/Q without radio tuning;
+- `rx-tuning`: add receive-frequency, filter, and gain control; and
+- `transmit`: retain receive operation while preparing the PA path and enabling
+  guarded Tune, physical-microphone, audio, and raw-I/Q transmit facilities.
 
-The default, analysis, capture-framing, and offline-server modes do not open
-USB. A live receive mode is implemented and has been successfully validated
-behind an explicit arming token:
+The packaged and built-in default is `rx-tuning`. Configuration parsing and
+validation live in `src/config.c`; the full precedence and option contract is
+documented in [configuration](CONFIGURATION.md). Legacy exact-mode commands
+remain supported, but they enter the same runtime implementation.
 
-```sh
-./build/flex1500d --serve-live-rx PORT --initialize-radio
-```
+## Component boundaries
 
-This exact form is permission-gated. Omitting or changing the final token exits
-with usage information before libusb is initialized.
+### Main daemon and event loop
+
+`src/flex1500d.c` owns process lifetime and concrete resources:
+
+- HTTP and optional `rtl_tcp` listening sockets;
+- accepted HTTP, IQ-stream, TX-stream, and `rtl_tcp` client sockets;
+- the libusb receiver instance and its recovery lifecycle;
+- runtime status snapshots and console diagnostics;
+- station ownership, Tune leases, network-TX sessions, and TX state; and
+- `SIGINT`/`SIGTERM` shutdown and final safe cleanup.
+
+The event loop pumps libusb completions, advances ownership and TX watchdogs,
+accepts and dispatches network requests, feeds transmit samples, and publishes
+receive samples. Network sockets are nonblocking, so a slow or disconnected
+consumer does not stop USB reception or other clients.
+
+### API policy controller
+
+`src/api.c` parses API requests, validates values and capabilities, applies
+station-ownership policy, and produces HTTP/JSON responses. It is independent
+of libusb and socket creation. Hardware operations cross narrow callbacks
+provided by the live daemon, including receive tuning and receive gain.
+
+The same controller is used by offline tests with no hardware callbacks. This
+keeps route and safety-policy tests deterministic and prevents an offline
+server from reaching the radio accidentally.
+
+### USB and protocol layers
+
+`src/usb_rx.c` owns live device I/O for USB `2192:1502`. It claims interface 3,
+sends the understood endpoint-`0x04` control commands, schedules receive and
+transmit transfers, and maintains radio and USB diagnostics. `src/protocol.c`
+contains command encoding, filter mapping, band-policy helpers, and physical
+input decoding.
+
+All command and stream operations cross the mockable interface in
+`src/usb_io.c`. Production delegates to libusb; offline failure-injection tests
+substitute deterministic command, stream-start, stream-service, and cleanup
+results. See [USB I/O mocking](USB_IO_MOCKING.md).
+
+### Receive processing and publication
+
+`src/iq.c` decodes the radio's signed 16-bit little-endian complex samples,
+tracks raw statistics and sentinel frames, applies adaptive DC removal, and
+places complex-float samples in the bounded receive ring. `src/publisher.c`
+encodes versioned `F15I` frames for network delivery.
+
+`src/dsp.c` provides the host-side AM, FM, USB, and LSB demodulation used by
+offline tools and the browser path. Demodulation mode and bandwidth are host
+state; selecting them does not send a demodulation-mode command to the radio.
+
+### Transmit control and signal generation
+
+Transmit responsibilities are divided so that authorization, lifecycle, DSP,
+and USB scheduling can be tested separately:
+
+- `src/station_owner.c` implements the persistent first-station control lease;
+- `src/tx_control.c` implements exclusive TX ownership and the startup,
+  receive, preparing, transmitting, unkeying, recovery, and fault states;
+- `src/tune_control.c` adds the dedicated Tune lease and hard-limit watchdog;
+- `src/network_tx.c` manages leased audio/raw-IQ sessions, stream attachment,
+  prebuffer readiness, data activity, and disconnect/expiry cleanup;
+- `src/tx_dsp.c` converts AM/USB/LSB audio to complex I/Q; and
+- `src/tx_audio_stream.c` applies gain, optional speech compression, limiting,
+  metering, bounded buffering, fade-out, and graceful draining.
+
+All normal TX sources converge on the shared controller before the USB backend
+can key the radio. Standalone research probes are separate executables; the
+daemon never invokes them.
+
+### Compatibility front ends
+
+The SoapySDR module in `soapy/Flex1500Device.cpp` is a client of the daemon's
+HTTP/IQ API, not an in-process radio driver. It maps Soapy discovery, tuning,
+gain, RX streaming, and optional TX streaming to daemon operations.
+
+The optional `rtl_tcp` listener is implemented by `src/rtl_tcp.c` and the main
+event loop. It is receive-only, converts the fixed 48 ksample/s radio stream to
+unsigned 8-bit I/Q, and uses filtered compatibility resampling for requested
+display rates. Its displayed bandwidth does not increase the FLEX-1500's
+48 kHz RF window; see [`rtl_tcp` compatibility](RTL_TCP.md).
+
+The companion client under `client/` is a separate executable. It consumes
+the daemon API remotely and presents PipeWire RX/TX audio plus a loopback
+Hamlib NET rigctl service to local applications. It is intentionally outside
+the daemon process and never accesses USB. See the
+[companion client guide](../client/README.md).
 
 ## Receive data path
 
@@ -51,158 +143,141 @@ with usage information before libusb is initialized.
 FLEX-1500 endpoint 0x82
         |
         v
-USB packet scheduler
+asynchronous libusb IN scheduler
         |
         v
-iq_s16le decoder, 48 kHz
-        |
-        +---- raw statistics / sentinel detection
+IQ16LE decode + statistics + sentinel detection
         |
         v
-adaptive DC estimator and subtraction
+adaptive DC subtraction
         |
         v
-bounded complex-float ring buffer
-        |
-        +---- status counters
+bounded 48 ksample/s complex-float ring
         |
         v
-network stream publisher
+F15I framing and fan-out
+        |
+        +-- up to four HTTP IQ consumers
+        +-- optional rtl_tcp consumer and rate conversion
 ```
 
-The ring currently uses a one-second capacity of 48,000 complex samples. A
-producer that outruns its consumer drops new frames and increments an explicit
-counter instead of overwriting unread data silently.
+The ring has a one-second capacity of 48,000 complex samples. If production
+outruns delivery, new samples are dropped and counted rather than silently
+overwriting unread samples. Each HTTP IQ consumer has an independent socket;
+a stalled or disconnected consumer is removed without stopping the others.
+The first receive consumer after an idle period discards stale buffered I/Q so
+it begins near live radio time.
 
-## DC removal
+Receive tuning sends the mapped frequency and RX-filter commands as one policy
+operation. After a successful retune, queued pre-tune I/Q is cleared while
+connected streams remain open. The physical RF center is shared; secondary
+clients may tune and demodulate only within the controlling station's 48 kHz
+window without moving the hardware.
 
-The processor seeds its I and Q estimates from the first sample and updates each
-estimate with an exponential coefficient of 0.001. The corrected output is the
-raw sample minus the current estimate.
+The native API preserves the radio's established complex-sample orientation.
+Compatibility boundaries that require conventional orientation—currently
+SoapySDR, `rtl_tcp`, and the companion client—apply the documented Q correction
+at their boundary. A coordinated native-orientation migration remains a
+separate future task.
 
-Applied offline to `captures/rx-settled.iq16le`, it produced:
+## Physical inputs
 
-| Measurement | I | Q |
-|-------------|---:|---:|
-| Raw mean | 98.666394 | 18.124706 |
-| Final DC estimate | 98.559044 | 17.991203 |
-| Processed mean | -0.009257 | -0.021161 |
+A continuous interrupt-IN listener on endpoint `0x83` decodes active-low
+physical microphone PTT, FlexWire PTT, dot, and dash state. The daemon reports
+the latest state and transition counters through the API.
 
-All 47,616 frames were processed with zero sentinel frames and zero ring drops.
+In receive-only modes all four inputs are observational. In transmit mode,
+physical microphone PTT enters the shared TX state machine after startup,
+frequency, mode, band-policy, and prepared-hardware checks pass. It is the
+reviewed local-priority exception to network TX ownership: it uses the current
+station settings without revoking the persistent station-control lease.
+FlexWire PTT, dot, and dash remain observational.
 
-## Current commands
+## Ownership and tuning model
 
-```sh
-./build/flex1500d --status
-./build/flex1500d --analyze captures/rx-settled.iq16le
+The first TX-capable client to acquire station control receives a renewable
+15-second lease. While held, that station controls physical frequency, mode,
+gain, TX settings, Tune, and general network TX. A foreign client cannot retune
+the hardware or transmit; it may continue receiving and select a virtual
+frequency inside the owner's current 48 kHz I/Q window.
+
+The ownership lease is persistent across individual transmissions. It ends
+only through explicit release, lease expiry/disconnect handling, daemon USB
+recovery, or process shutdown. A mode-unaware owner such as the bundled Soapy
+adapter is recorded as such so physical-microphone PTT can derive the normal
+USB/LSB choice from the hardware frequency. Leases are coordination and safety
+mechanisms, not authentication credentials.
+
+Tune, physical microphone, and network audio/raw-IQ sessions additionally
+compete for the one shared transmitter state machine. Two network sources
+cannot key simultaneously.
+
+## Transmit data and lifecycle
+
+```text
+PCM16 audio ----> mode DSP ---+
+                              |
+complex IQ16 ---------------->+-> gain/limit/buffer -> endpoint 0x01 scheduler
+                              |                          |
+physical microphone audio --->+                          +-> endpoint 0x04
+                                                            key/filter control
 ```
 
-Both are offline. `--status` emits the status model intended for the future HTTP
-endpoint. `--analyze` runs a raw capture through the receive processor.
+Network TX requires a valid station owner, a leased session, an attached data
+stream, and a 4,096-frame prebuffer before PTT can start. Audio profiles pass
+through AM/USB/LSB DSP; raw-I/Q profiles remain bounded by the same output
+limiter and drive setting. The SoapySDR TX channel and companion-client audio
+path use this leased network scheduler.
 
-## Planned network API
+Normal PTT release stops accepting new samples, drains queued meaningful audio
+and submitted USB data, applies the end fade, and unkeys when empty. The drain
+is bounded to one second; any remainder is discarded and reported. Watchdog,
+disconnect, USB error, maximum-key, shutdown, and emergency paths unkey
+immediately instead of waiting for buffered audio.
 
-The first network version will keep control and sample transport separate:
+The shared maximum-key timer defaults to 180 seconds and cannot be disabled.
+Tune has its own renewable lease and 60-second hard limit. Shutdown and partial
+startup failure attempt transition mute, unkey, receive-frequency restoration,
+PA-filter reset, amplifier disable, transfer cancellation, interface release,
+and device close. Counters expose starts, stops, watchdog activity, rejected
+ownership, queue depth, graceful drains, underruns, limiting, dropped samples,
+and cleanup failures.
 
-- `GET /v1/status`: JSON service, radio, USB, sample, and buffer state.
-- `GET /v1/radio`: JSON identity and firmware information.
-- `GET /v1/stream/iq`: binary complex-sample stream with an explicit format
-  header and sequence numbers.
+## USB failure recovery
 
-State-changing control endpoints will not be added until their radio commands
-are individually understood and permission-tested. TX/PTT remains absent from
-the daemon and API. The successful standalone TX probes are deliberately
-separate executables with no daemon command-line or network call path.
+If USB processing stops or the device disappears, the daemon:
 
-## Filter ownership and lifecycle plan
+1. closes receive and TX stream clients;
+2. invalidates network TX and station-control state;
+3. performs immediate TX cleanup and stops the USB backend;
+4. retries reopening the radio once per second for up to 60 attempts; and
+5. restores the previous receive gain and known physical frequency.
 
-Receive tuning will own the receive preselector (`SET_RX_FILTER`, opcode 1257).
-The daemon will select the documented receive-filter band when it applies a
-frequency change. Receive startup and shutdown will not write the PA-filter
-relay merely to produce a click or force a presumed default.
+In transmit mode, recovery must also prepare the TX hardware again before the
+state machine is re-armed. The configured maximum-key timeout and accumulated
+TX diagnostics survive recovery. IQ rings are cleared so clients cannot receive
+stale pre-disconnect samples. Some USB disconnects do not re-enumerate the
+FLEX-1500 without a physical power cycle; this is reported explicitly.
 
-The PA filter (`SET_PA_FILTER`, opcode 1260) belongs to a future transmit
-subsystem. Before that subsystem can be implemented, it must select the proper
-PA band before keying, remember whether it changed the relay, and return it to
-filter 0 during an orderly full shutdown if it owns that change. The transmit
-capture also shows that a safe TX lifecycle requires substantially more than a
-PA-filter write; see `PCAP_TRANSMIT.md`. No TX endpoint or live TX path is
-currently planned for the receive milestone.
+## Security boundary
 
-## Live integration boundary
+The HTTP API and optional `rtl_tcp` listener can bind to the LAN, but API
+version 1 has no authentication or transport encryption. Station and TX leases
+do not identify a person and must not be treated as security controls. Bind or
+firewall the listeners for trusted hosts only and never expose them directly to
+the Internet. The proposed security separation is documented in
+[API authentication design](API_AUTHENTICATION_DESIGN.md).
 
-The reusable continuous libusb RX producer is now implemented as
-`flex1500_usb_rx`, behind an explicit API boundary:
+## Offline operation and verification
 
-- Creating, inspecting, and destroying an unstarted receiver is offline.
-- `flex1500_usb_rx_start()` is the permission-gated live boundary. It opens only
-  `2192:1502`, claims interface 3, sends the fixed opcode-1219 `INITIALIZE`
-  packet, queues eight endpoint-`0x82` IN transfers, and queues one continuous
-  interrupt-IN listener on endpoint `0x83`.
-- Each transfer contains 64 packets. Completed packets are decoded, DC-corrected,
-  and pushed into the destination ring before the transfer is resubmitted.
-- Packet errors, bytes, resubmissions, submission failures, IQ statistics, ring
-  drops, and the last error are available to the future status endpoint.
-- Stop cancels pending host-side IN transfers, drains callbacks, releases the
-  interface, and closes libusb.
+Status inspection, capture analysis, framing, demodulation, configuration
+validation, the offline HTTP server, and the automated test suite do not open
+the radio. Hardware-independent policy, DSP, ownership, lifecycle, network,
+and injected USB-failure behavior are exercised offline. Live commands and
+configuration modes are the explicit boundary that opens and changes radio
+state.
 
-Endpoint `0x83` is decoded as active-low physical mic PTT, FlexWire PTT, dash,
-and dot inputs. The backend stores the latest state and counts packets, changes,
-and errors. The daemon logs transitions and exposes them through
-`GET /v1/radio`. In RX-only mode they remain observational. In explicitly
-enabled TX mode, changed microphone-PTT edges enter the exclusive physical-mic
-state machine after startup, mode, and frequency interlocks pass; FlexWire,
-dash, and dot remain observational.
-
-The live daemon test on September 1, 2026 observed mic PTT press as raw `0x38`
-and release as raw `0x39`. The API subsequently reported known, released state
-for all four inputs, `transmit_enabled` remained false, and shutdown completed
-normally without keying the radio.
-
-The live start API is wired only to `--serve-live-rx PORT --initialize-radio`.
-It listens on all IPv4 interfaces, opens the radio, sends the fixed initialization
-packet, and services continuous IN transfers. `SIGINT` and `SIGTERM` cancel the
-host transfers and release the USB interface.
-
-The event loop accepts status requests and at most one IQ streaming client.
-The IQ socket is nonblocking. It drains as many frames as possible after each
-USB completion, preserves partially written frames across backpressure, and
-closes a disconnected client without stopping radio reception. The bounded ring
-continues to account for samples dropped when no client can keep up.
-
-The first live daemon run and IQ-client validation completed successfully. The
-HTTP loop now preserves a partially received request across nonblocking event
-iterations. The read-only API exposes `/v1/status`, `/v1/radio`, and one IQ
-stream; status distinguishes USB/ring counters from publisher delivery,
-backpressure, disconnect, and write-error counters.
-
-Daemon-managed RX tuning/filter selection is now implemented behind a new exact
-arming token and remains unexecuted. The old initialization-only command retains
-its original behavior. The next receive milestones are live validation of RX
-tuning, LAN binding with an explicit access policy, a compatibility adapter,
-and live demodulated-audio streaming. Each radio-state-changing integration or
-live validation remains subject to KB1JDX's explicit permission.
-
-## Transmit boundary
-
-Native Linux TX switching, fixed test waveforms, and the PowerSDR-compatible
-Tune carrier have been demonstrated successfully. The basic and RX-tuning
-daemon modes remain receive-only. The distinct transmit-enabled mode prepares
-the TX amplifier path, tracks the PA filter after a frequency becomes known,
-exposes the fixed Tune carrier, and connects physical microphone PTT to live
-AM/USB/LSB modulation through the shared TX controller. Leased HTTP TX sessions
-now accept AM/USB/LSB PCM or guarded complex I/Q through that same controller;
-USB PCM and raw-I/Q paths have bounded live dummy-load validation. The
-SoapySDR adapter now maps its optional TX channel into the leased raw-I/Q API;
-that adapter path has exhaustive mock-daemon coverage but still requires a
-separately approved live interoperability test.
-
-All endpoint-`0x04` commands and endpoint-`0x01` TX stream start, service, and
-stop operations cross the mockable interface described in
-[USB I/O mocking](USB_IO_MOCKING.md). The production implementation delegates
-to libusb; offline tests can inject deterministic failures without a radio.
-
-The guarded TX probes remain research/validation tools and are included in the
-standard build. `FLEX1500_BUILD_TX_RESEARCH=OFF` omits those standalone
-executables without changing daemon capabilities. Probe execution remains
-separately armed and entirely at the operator's own risk.
+The current default suite contains 54 offline tests; enabling the optional thin
+client adds three more for a total of 57. Live validation records and
+operator-observed results remain in the focused documents linked from the main
+README rather than being embedded as historical milestones here.

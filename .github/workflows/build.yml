@@ -36,7 +36,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes build-essential cmake pkg-config \
-            fakeroot libusb-1.0-0-dev libsoapysdr-dev soapysdr-tools
+            fakeroot libusb-1.0-0-dev libpipewire-0.3-dev \
+            libsoapysdr-dev soapysdr-tools
 
       - name: Configure
         run: >-
@@ -67,5 +68,39 @@ jobs:
         with:
           name: flex1500d-${{ matrix.arch }}-deb
           path: flex1500d_*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Configure thin-client Debian package
+        if: matrix.build_type == 'Release'
+        run: >-
+          cmake -S . -B build-client-package
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_FLAGS=-Werror
+          -DCMAKE_CXX_FLAGS=-Werror
+          -DFLEX1500_BUILD_SOAPYSDR=OFF
+          -DFLEX1500_BUILD_TX_RESEARCH=OFF
+          -DFLEX1500_BUILD_CLIENT=ON
+          -DFLEX1500_PACKAGE_CLIENT_ONLY=ON
+
+      - name: Build thin-client Debian package
+        if: matrix.build_type == 'Release'
+        run: |
+          cmake --build build-client-package --parallel
+          ctest --test-dir build-client-package --output-on-failure
+          cpack --config build-client-package/CPackConfig.cmake -G DEB
+
+      - name: Test thin-client Debian package lifecycle
+        if: matrix.build_type == 'Release'
+        run: |
+          package=$(find . -maxdepth 1 -name 'flex1500-client_*.deb' -print -quit)
+          tests/client_debian_package_lifecycle.sh "$package"
+
+      - name: Upload Release thin-client Debian package
+        if: matrix.build_type == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flex1500-client-${{ matrix.arch }}-deb
+          path: flex1500-client_*.deb
           if-no-files-found: error
           retention-days: 30

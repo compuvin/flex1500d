@@ -1,24 +1,33 @@
 # flex1500d
 
-> **Experimental software — use with care.** This project is an early,
-> reverse-engineered Linux implementation for the FlexRadio FLEX-1500. It is
-> not affiliated with, endorsed by, supported by, or maintained by FlexRadio
+> **Live-tested beta software — use with care.** This project is a
+> community-developed, reverse-engineered Linux implementation for the
+> FlexRadio FLEX-1500. Receive and transmit operation have been validated on
+> real hardware, including a completed over-the-air contact. It remains under
+> active development. This project is not affiliated with, endorsed by,
+> supported by, or maintained by FlexRadio
 > Systems. It may contain protocol errors and is not a replacement for
 > PowerSDR. Back up expectations accordingly and review the hardware-safety
 > documentation before allowing any program to open the radio.
 
 `flex1500d` turns a FLEX-1500 USB software-defined radio into a network SDR
 exposed through a local API. It defaults to receive-only operation; separately
-enabled transmit support remains experimental:
+enabled transmit support is live-tested and continues to undergo broader mode
+and application validation:
 
 ```text
-FLEX-1500 -> libusb -> flex1500d -> HTTP/IQ API -> SDR client
+FLEX-1500 -> libusb -> flex1500d -> HTTP/IQ API -> browser / SoapySDR
+                              |                  -> companion client
+                              |                     -> PipeWire / Hamlib
+                              +-> rtl_tcp compatibility listener
 ```
 
 The current daemon receives 48 kHz complex I/Q, tunes from 100 kHz through
 54 MHz, selects the mapped hardware RX filter, reports detailed USB/stream
 status, and serves as many as four simultaneous IQ clients. An opt-in browser
-test page provides AM, FM, USB, LSB, and CW audio.
+test page provides AM, FM, USB, LSB, and CW audio. Explicitly enabled transmit
+operation supports the physical microphone, browser/API clients, SoapySDR,
+and the companion client's PipeWire audio and Hamlib rig-control bridge.
 
 ## Project goals
 
@@ -99,12 +108,13 @@ Transmit operations are exposed only by configured `mode=transmit` or the
 legacy `--initialize-radio-and-enable-transmit` live mode. The validated fixed
 Tune carrier and physical microphone path share an exclusive owner with the
 HTTP PCM-audio and complex-I/Q TX sessions. Network TX adds prebuffer, lease,
-lease, maximum-key, disconnect, and cleanup watchdogs. HTTP PCM audio and
+renewal, maximum-key, disconnect, and cleanup watchdogs. HTTP PCM audio and
 raw I/Q have completed bounded live dummy-load tests; individual modes, bands,
-and applications still require the validation tracked in the engineering
-checklist. The interlocks and leases are safety mechanisms, not security
-credentials. Use a suitable matched antenna system or 50-ohm dummy load and
-follow normal RF exposure and station-control practices.
+and applications continue to be validated. The companion client has also
+completed a live 5 W FT8 contact through WSJT-X. The interlocks and leases are
+safety mechanisms, not security credentials. Use a suitable matched antenna
+system or 50-ohm dummy load and follow normal RF exposure and station-control
+practices.
 
 The standard build includes standalone transmit-research executables for
 protocol documentation and reproducibility. They are never called by the
@@ -127,7 +137,8 @@ does not modify the project goals above.
 
 - Native Linux userspace USB transport using `libusb-1.0`
 - Tested FLEX-1500 identity: USB `2192:1502`, firmware `0.5.3.24`
-- Receive-only 48 kHz complex-I/Q streaming
+- 48 kHz complex-I/Q receive streaming, with explicitly enabled physical-mic,
+  network-audio, and raw-I/Q transmit paths
 - RX frequency and hardware-filter control from 100 kHz to 54 MHz
 - HTTP/IQ API on TCP port 15000, available to local and trusted-LAN clients
 - LAN-accessible 5 W Tune API in the transmit-enabled daemon, with
@@ -140,6 +151,9 @@ does not modify the project goals above.
   controls
 - Conditional RX/TX SoapySDR adapter for established SDR applications; TX is
   exposed only to the station owner when the daemon is transmit-enabled
+- Optional receive-only `rtl_tcp` compatibility listener
+- Optional companion client with PipeWire RX/TX audio and loopback Hamlib NET
+  rig-control integration, live-tested with WSJT-X and FT8
 - Guarded hardware probes that remain offline unless given an exact execution
   argument
 
@@ -157,14 +171,16 @@ does not modify the project goals above.
   adjustable through the API and test page; hardware bandwidth and additional
   DSP refinement remain future work.
 - The initial SoapySDR adapter has been validated with live radio data and SDR
-  Oxide, but broader application compatibility still needs testing; there is
-  no Hamlib or other adapter yet.
+  Oxide, but broader application compatibility still needs testing. The
+  optional companion client provides PipeWire audio and a Hamlib NET rigctl
+  bridge, but it is not yet included in the normal build or Debian package.
 - The Debian package installs and enables a systemd service for the next boot,
   but deliberately does not start it during package installation. Source-tree
   commands continue to run in the foreground.
-- Transmit remains experimental and is unavailable in normal receive-only
-  daemon modes. The explicitly transmit-enabled mode supports the paths and
-  limitations listed in the [transmit operator guide](docs/TX_OPERATOR_GUIDE.md).
+- Transmit is live-tested but remains explicitly enabled and unavailable in
+  normal receive-only daemon modes. Additional modes, applications, and
+  station configurations continue to require validation as described in the
+  [transmit operator guide](docs/TX_OPERATOR_GUIDE.md).
 
 ## Requirements
 
@@ -179,17 +195,19 @@ sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev \
 
 The browser test page requires a browser with a 48 kHz `AudioContext`.
 `AudioWorklet` is preferred, with a compatible script-processor fallback.
+Building the optional companion client additionally requires
+`libpipewire-0.3-dev`; see the [companion client guide](client/README.md).
 
-### Experimental Debian package
+### Debian packages
 
-GitHub releases may include experimental `amd64` and `arm64` packages. Install
+GitHub releases may include pre-release `amd64` and `arm64` packages. Install
 the package matching the Debian architecture reported by
 `dpkg --print-architecture`, together with its declared dependencies, using:
 
 ```sh
-sudo apt install ./flex1500d_0.2.2_amd64.deb
+sudo apt install ./flex1500d_0.2.3_amd64.deb
 # or, on ARM64:
-sudo apt install ./flex1500d_0.2.2_arm64.deb
+sudo apt install ./flex1500d_0.2.3_arm64.deb
 ```
 
 The package installs `flex1500d`, the SoapySDR module, the udev access rule, a
@@ -199,6 +217,19 @@ not start it during installation. Unplug and reconnect the FLEX-1500 after
 installation so the new udev rule is applied. See the
 [systemd service guide](docs/SYSTEMD_SERVICE.md) before starting it. Remove the
 package with `sudo apt remove flex1500d`.
+
+The optional workstation-side thin client is distributed separately so radio
+hosts do not need PipeWire or Hamlib compatibility components:
+
+```sh
+sudo apt install ./flex1500-client_0.2.3_amd64.deb
+# or, on ARM64:
+sudo apt install ./flex1500-client_0.2.3_arm64.deb
+```
+
+This package installs `flex1500-client` and its documentation only. It does not
+install or start `flex1500d`, access USB, or add a system service. See the
+[thin-client guide](client/README.md).
 
 The package is built for the Ubuntu version used to create the release and may
 not run on older Debian-family systems whose glibc or SoapySDR ABI differs.
@@ -215,9 +246,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The clean default configuration currently runs 54 offline tests. Building and
-testing does not enumerate, open, initialize, tune, or otherwise access the
-radio.
+The clean default configuration currently runs 54 offline tests; enabling the
+optional thin client adds three more for a total of 57. Building and testing
+does not enumerate, open, initialize, tune, or otherwise access the radio.
 
 The standard build produces both the API daemon and the conditional RX/TX
 `flex1500Support` module. The adapter exposes TX only when connected to an
@@ -274,7 +305,7 @@ sudo udevadm control --reload-rules
 Unplug and reconnect the radio again after removal. Additional details are in
 [RULE_CHANGES.txt](RULE_CHANGES.txt).
 
-## Run the receive daemon
+## Run the daemon
 
 Live commands open and initialize the radio and therefore change radio state.
 Review the command and ensure no other program owns the FLEX-1500 first.
@@ -305,9 +336,9 @@ command line. Use `--check-config` or `--print-effective-config` to inspect the
 effective configuration without opening the radio. See the
 [configuration reference](docs/CONFIGURATION.md).
 
-An experimental receive-only [`rtl_tcp` compatibility listener](docs/RTL_TCP.md)
-is available for clients without the project Soapy adapter. It is disabled by
-default and uses the FLEX-1500's fixed 48 ksample/s bandwidth.
+A receive-only [`rtl_tcp` compatibility listener](docs/RTL_TCP.md) is available
+for clients without the project Soapy adapter. It is disabled by default and
+uses the FLEX-1500's fixed 48 ksample/s bandwidth.
 
 The earlier exact-mode commands remain supported for compatibility with old
 scripts and research notes, but new usage should prefer configuration files or
@@ -338,9 +369,9 @@ All three compatibility commands listen on TCP port 15000 on all IPv4
 interfaces. They run in the foreground and do not install or start a system
 service.
 
-The validated capture-matched 5 W Tune API is included only in the transmit-
-Configured operation exposes the same Tune API only when `mode=transmit`; the
-command and Tune lease are not authentication mechanisms.
+The validated capture-matched 5 W Tune API is available only when the daemon is
+configured with `mode=transmit`; selecting that mode and holding a Tune lease
+are not authentication mechanisms.
 
 > **LAN security:** API version 1 currently has no authentication or transport
 > encryption. Permit port 15000 only from trusted local hosts using the daemon
@@ -465,6 +496,11 @@ TX accepts AM/USB/LSB PCM audio or guarded raw complex I/Q. The SoapySDR adapter
 maps its TX stream to the same leased raw-I/Q API and exposes TX only to the
 station owner when the connected daemon reports transmit enabled.
 
+The companion client has been live-tested with PipeWire TX audio, Hamlib PTT,
+and WSJT-X. It completed a 5 W FT8 contact with KC9YTT on 40 meters; the full
+receive, transmit, and over-the-air results are recorded in the
+[companion client test record](docs/COMPANION_CLIENT_TESTING.md).
+
 For a deliberate foreground transmit-enabled source-tree run with the browser
 test page:
 
@@ -476,11 +512,13 @@ test page:
 This command changes radio state and enables transmit facilities. Review the
 transmit operator guide and ensure the station is safe before running it.
 
-Transmit mode and all standalone TX probes are experimental, intended for
-testing, and used entirely at the operator's own risk. The operator is
-responsible for legal operation, a suitable matched antenna system or dummy
-load, RF exposure, interference prevention, and immediately stopping an
-unexpected transmission.
+Daemon transmit is live-tested, explicitly enabled, and still under active
+development; it is not certified station-control software. The standalone TX
+research probes remain experimental tools intended for controlled protocol
+research, not normal operation. All transmit use is entirely at the operator's
+own risk. The operator is responsible for legal operation, a suitable matched
+antenna system or dummy load, RF exposure, interference prevention, and
+immediately stopping an unexpected transmission.
 
 ## Documentation map
 
@@ -488,6 +526,9 @@ unexpected transmission.
 - [Network API and IQ framing](docs/NETWORK_API.md)
 - [Receive DSP](docs/RECEIVE_DSP.md)
 - [Transmit audio signal chain](docs/TX_SIGNAL_CHAIN.md)
+- [Companion client](client/README.md)
+- [Client integration guide](docs/CLIENT_INTEGRATION_GUIDE.md)
+- [Companion client testing](docs/COMPANION_CLIENT_TESTING.md)
 - [SDR compatibility roadmap](docs/SDR_COMPATIBILITY.md)
 - [Protocol findings](docs/PROTOCOL_FINDINGS.md)
 - [Hardware safety](docs/HARDWARE_SAFETY.md)

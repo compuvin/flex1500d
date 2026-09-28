@@ -1,5 +1,72 @@
 # Release notes
 
+## v0.2.3 — thin-client digital-mode and TX-streaming release
+
+This live-tested beta release adds the optional `flex1500-client` thin client,
+improves continuous network transmit audio, and publishes separate daemon and
+thin-client Debian packages for `amd64` and `arm64`.
+
+The project remains unaffiliated with, unendorsed by, and unsupported by
+FlexRadio Systems. API version 1 remains unauthenticated and unencrypted and
+must not be exposed to an untrusted network or the public internet.
+
+### Highlights
+
+- Added the optional `flex1500-client` thin compatibility bridge with a
+  PipeWire `FLEX-1500 RX` source, `FLEX-1500 TX` sink, and loopback Hamlib NET
+  rig-control service.
+- Added persistent thin-client frequency and mode restoration, conventional
+  receive-spectrum orientation, station ownership renewal, and receive-only
+  secondary behavior.
+- Fixed bursty thin-client TX audio by replacing repeated HTTP uploads with a
+  persistent, paced PCM stream and bounded local buffering.
+- Added explicit PTT failure reporting and bounded retry for the daemon's
+  prebuffer-not-ready response.
+- Added filtered `rtl_tcp` sample-rate conversion, partial-write handling,
+  first-client stale-IQ removal, and center-spur correction.
+- Updated the project and daemon architecture documentation to reflect the
+  live-tested receive, transmit, ownership, recovery, and compatibility paths.
+- Added a client integration guide for third-party thin clients, SDR front
+  ends, and compatibility adapters.
+
+### Live validation
+
+The thin client was tested across a LAN with the daemon running on a Raspberry
+Pi 3. WSJT-X controlled frequency, mode, and PTT through Hamlib while using the
+thin client's PipeWire devices for receive and transmit audio. Dummy-load Tune
+and FT8 tests produced clean, continuous audio with bounded queues and no
+captured gaps of 5 ms or longer.
+
+KB1JDX then completed the project's first two-way contact using both
+`flex1500d` and `flex1500-client`: a 5 W, 40-meter FT8 QSO with KC9YTT. KC9YTT
+received KB1JDX at -13 dB, and KB1JDX received KC9YTT at -11 dB.
+
+### Packages
+
+The release provides two independent package types for both `amd64` and
+`arm64`:
+
+- `flex1500d` installs the radio-host daemon, SoapySDR module, udev rule,
+  receive-only default configuration, systemd service, and documentation.
+- `flex1500-client` installs only the optional workstation-side thin client and
+  its documentation. It does not install a daemon service, radio configuration,
+  udev rule, or USB-access component.
+
+Both package types declare their shared-library dependencies automatically and
+have isolated package-lifecycle tests. The daemon service remains enabled for
+the next boot but is deliberately not started during package installation.
+
+### Important limitations
+
+- General TX is live-tested but remains explicitly enabled and under active
+  development. The operator remains responsible for legal and safe operation.
+- The API remains unauthenticated and unencrypted.
+- The thin client is a compatibility bridge, not a complete SDR application.
+- The thin client currently targets Linux with PipeWire and supports a focused
+  Hamlib NET rigctl subset used by applications such as WSJT-X.
+- SoapySDR TX has been live-tested with SDR Oxide; another SoapySDR application
+  is still needed for broader interoperability validation.
+
 ## v0.2.2 — capture-matched AM and ARM64 package release
 
 This experimental release adds native `arm64` Debian packaging alongside

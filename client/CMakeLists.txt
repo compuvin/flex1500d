@@ -31,6 +31,23 @@ target_compile_definitions(flex1500-client PRIVATE
     FLEX1500_CLIENT_GIT_REVISION="${FLEX1500_GIT_REVISION}"
 )
 
+install(TARGETS flex1500-client
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+if(FLEX1500_PACKAGE_CLIENT_ONLY)
+    install(FILES README.md
+        DESTINATION share/doc/flex1500-client
+    )
+    install(FILES ../docs/CLIENT_INTEGRATION_GUIDE.md
+                  ../docs/COMPANION_CLIENT_TESTING.md
+        DESTINATION share/doc/flex1500-client
+    )
+    install(FILES ../LICENSE
+        DESTINATION share/doc/flex1500-client
+        RENAME copyright
+    )
+endif()
+
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME client-help COMMAND flex1500-client --help)

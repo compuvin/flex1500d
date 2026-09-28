@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(flex1500d VERSION 0.2.2 LANGUAGES C CXX)
+project(flex1500d VERSION 0.2.3 LANGUAGES C CXX)
 
 execute_process(
     COMMAND git rev-parse --short=8 HEAD
@@ -37,6 +37,15 @@ option(FLEX1500_BUILD_CLIENT
     "Build the initial flex1500 companion client"
     OFF
 )
+option(FLEX1500_PACKAGE_CLIENT_ONLY
+    "Package only the optional flex1500 thin client"
+    OFF
+)
+if(FLEX1500_PACKAGE_CLIENT_ONLY AND NOT FLEX1500_BUILD_CLIENT)
+    message(FATAL_ERROR
+        "FLEX1500_PACKAGE_CLIENT_ONLY requires FLEX1500_BUILD_CLIENT=ON"
+    )
+endif()
 if(FLEX1500_BUILD_SOAPYSDR)
     find_package(SoapySDR 0.8 REQUIRED)
 endif()
@@ -62,38 +71,31 @@ if(FLEX1500_BUILD_SOAPYSDR)
     )
 endif()
 
-install(FILES 70-flex1500.rules
-    DESTINATION lib/udev/rules.d
-)
-install(FILES README.md RELEASE_NOTES.md
-    DESTINATION ${CMAKE_INSTALL_DOCDIR}
-)
-install(FILES docs/CONFIGURATION.md docs/SYSTEMD_SERVICE.md
-    DESTINATION ${CMAKE_INSTALL_DOCDIR}
-)
-install(FILES LICENSE
-    DESTINATION ${CMAKE_INSTALL_DOCDIR}
-    RENAME copyright
-)
+if(NOT FLEX1500_PACKAGE_CLIENT_ONLY)
+    install(FILES 70-flex1500.rules
+        DESTINATION lib/udev/rules.d
+    )
+    install(FILES README.md RELEASE_NOTES.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    )
+    install(FILES docs/CONFIGURATION.md docs/SYSTEMD_SERVICE.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    )
+    install(FILES LICENSE
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}
+        RENAME copyright
+    )
+endif()
 
 set(CPACK_GENERATOR "DEB")
-set(CPACK_PACKAGE_NAME "flex1500d")
 set(CPACK_PACKAGE_VENDOR "KB1JDX")
 set(CPACK_PACKAGE_CONTACT "compuvin@users.noreply.github.com")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-    "Experimental Linux network SDR daemon for the FLEX-1500")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER
     "KB1JDX <compuvin@users.noreply.github.com>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "hamradio")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)
-set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
-    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/conffiles"
-    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst"
-    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/prerm"
-    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm"
-)
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 execute_process(
     COMMAND dpkg --print-architecture
@@ -104,8 +106,25 @@ execute_process(
 if(NOT CPACK_DEBIAN_PACKAGE_ARCHITECTURE)
     set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE ${CMAKE_SYSTEM_PROCESSOR})
 endif()
-set(CPACK_PACKAGE_FILE_NAME
-    "flex1500d_${PROJECT_VERSION}_${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
+if(FLEX1500_PACKAGE_CLIENT_ONLY)
+    set(CPACK_PACKAGE_NAME "flex1500-client")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "PipeWire and Hamlib thin client for flex1500d")
+    set(CPACK_PACKAGE_FILE_NAME
+        "flex1500-client_${PROJECT_VERSION}_${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
+else()
+    set(CPACK_PACKAGE_NAME "flex1500d")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "Live-tested beta Linux network SDR daemon for the FLEX-1500")
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/conffiles"
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst"
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/prerm"
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm"
+    )
+    set(CPACK_PACKAGE_FILE_NAME
+        "flex1500d_${PROJECT_VERSION}_${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
+endif()
 include(CPack)
 
 option(FLEX1500_BUILD_TX_RESEARCH
@@ -184,15 +203,17 @@ target_compile_definitions(flex1500d PRIVATE
     FLEX1500_SOFTWARE_VERSION="${PROJECT_VERSION}"
     FLEX1500_GIT_REVISION="${FLEX1500_GIT_REVISION}"
 )
-install(TARGETS flex1500d
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-install(FILES flex1500d.conf
-    DESTINATION /etc/flex1500d
-)
-install(FILES packaging/flex1500d.service
-    DESTINATION lib/systemd/system
-)
+if(NOT FLEX1500_PACKAGE_CLIENT_ONLY)
+    install(TARGETS flex1500d
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(FILES flex1500d.conf
+        DESTINATION /etc/flex1500d
+    )
+    install(FILES packaging/flex1500d.service
+        DESTINATION lib/systemd/system
+    )
+endif()
 
 add_executable(flex1500-status-probe src/flex1500_status_probe.c)
 target_link_libraries(flex1500-status-probe PRIVATE

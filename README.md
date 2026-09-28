@@ -99,7 +99,7 @@ Transmit operations are exposed only by configured `mode=transmit` or the
 legacy `--initialize-radio-and-enable-transmit` live mode. The validated fixed
 Tune carrier and physical microphone path share an exclusive owner with the
 HTTP PCM-audio and complex-I/Q TX sessions. Network TX adds prebuffer, lease,
-sample-data, maximum-key, disconnect, and cleanup watchdogs. HTTP PCM audio and
+lease, maximum-key, disconnect, and cleanup watchdogs. HTTP PCM audio and
 raw I/Q have completed bounded live dummy-load tests; individual modes, bands,
 and applications still require the validation tracked in the engineering
 checklist. The interlocks and leases are safety mechanisms, not security

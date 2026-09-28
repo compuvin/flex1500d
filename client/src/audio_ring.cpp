@@ -41,4 +41,10 @@ std::size_t AudioRing::pop(float *samples, std::size_t count)
     return produced;
 }
 
+void AudioRing::clear()
+{
+    read_.store(write_.load(std::memory_order_acquire),
+                std::memory_order_release);
+}
+
 } // namespace flex1500::client

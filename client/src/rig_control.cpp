@@ -160,7 +160,7 @@ CommandResult execute(const std::string &line,
     }
 
     if (command == "t" || command == "\\get_ptt")
-        return {"0\n", false};
+        return {callbacks.state().ptt ? "1\n" : "0\n", false};
     if (command == "T" || command == "\\set_ptt") {
         std::string argument;
         int ptt = -1;
@@ -176,9 +176,11 @@ CommandResult execute(const std::string &line,
         }
         if (consumed != argument.size() || ptt < 0 || ptt > 3)
             return {"RPRT " + std::to_string(invalid_argument) + "\n", false};
-        return {ptt == 0 ? "RPRT 0\n"
-                         : "RPRT " + std::to_string(not_implemented) + "\n",
-                false};
+        // Hamlib distinguishes generic, microphone, and data PTT-on values.
+        // The companion has one owned audio TX path, so all three key that
+        // same state machine; zero remains the only unkey value.
+        return {callbacks.set_ptt && callbacks.set_ptt(ptt != 0)
+                    ? "RPRT 0\n" : "RPRT -9\n", false};
     }
     return {"RPRT " + std::to_string(not_implemented) + "\n", false};
 }
@@ -257,13 +259,26 @@ void RigControlServer::run()
         const int ready = poll(descriptors, count, 200);
         if (ready < 0 && errno == EINTR) continue;
         if (ready < 0) break;
+        if (client >= 0 && callbacks_.consume_tx_fault &&
+            callbacks_.consume_tx_fault()) {
+            close(client);
+            client = -1;
+            pending.clear();
+            std::cerr << "[rig] disconnected local Hamlib client after "
+                         "asynchronous TX failure\n";
+        }
         if ((descriptors[0].revents & POLLIN) != 0) {
             const int accepted = accept(listener_, nullptr, nullptr);
             if (accepted >= 0) {
-                if (client >= 0) close(client);
-                client = accepted;
-                pending.clear();
-                std::cout << "[rig] local Hamlib client connected\n";
+                if (client >= 0) {
+                    close(accepted);
+                    std::cout << "[rig] rejected competing local Hamlib "
+                                 "connection\n";
+                } else {
+                    client = accepted;
+                    pending.clear();
+                    std::cout << "[rig] local Hamlib client connected\n";
+                }
             }
         }
         if (client < 0) continue;

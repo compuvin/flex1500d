@@ -12,7 +12,6 @@
 
 enum {
     FLEX1500_NETWORK_TX_LEASE_MS = 15000,
-    FLEX1500_NETWORK_TX_DATA_MS = 1000,
     FLEX1500_NETWORK_TX_MIN_PREBUFFER_FRAMES = 4096,
 };
 
@@ -44,7 +43,6 @@ typedef enum flex1500_network_tx_result {
     FLEX1500_NETWORK_TX_NOT_READY,
     FLEX1500_NETWORK_TX_HARDWARE_ERROR,
     FLEX1500_NETWORK_TX_EXPIRED,
-    FLEX1500_NETWORK_TX_DATA_TIMEOUT,
 } flex1500_network_tx_result;
 
 typedef struct flex1500_network_tx {

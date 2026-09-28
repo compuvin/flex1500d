@@ -120,12 +120,15 @@ int main(void)
           FLEX1500_NETWORK_TX_OK);
     expect_cleanup(&state, false);
 
-    /* Missing sample data is a fatal stream watchdog event. */
+    /* Silence/missing samples do not override an asserted PTT state. */
     init_control(&control, &state, 30000);
     start_network(&control, &session, 3, 300);
     CHECK(flex1500_network_tx_tick(
-              &session, 303 + FLEX1500_NETWORK_TX_DATA_MS) ==
-          FLEX1500_NETWORK_TX_DATA_TIMEOUT);
+              &session, 303 + 1000) ==
+          FLEX1500_NETWORK_TX_OK);
+    CHECK(control.owner == FLEX1500_TX_OWNER_HTTP && session.keyed);
+    CHECK(flex1500_network_tx_disconnect_stream(&session) ==
+          FLEX1500_NETWORK_TX_OK);
     expect_cleanup(&state, false);
 
     /* Lease expiry also unkeys even when sample data is still arriving. */

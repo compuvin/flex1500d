@@ -16,6 +16,7 @@ public:
 
     std::size_t push(const float *samples, std::size_t count);
     std::size_t pop(float *samples, std::size_t count);
+    void clear();
     std::size_t capacity() const { return samples_.size(); }
     std::uint64_t dropped() const { return dropped_.load(); }
     std::uint64_t underruns() const { return underruns_.load(); }

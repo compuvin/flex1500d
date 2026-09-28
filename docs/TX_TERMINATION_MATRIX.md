@@ -27,7 +27,7 @@ faulted state, and exposes the cleanup failure through diagnostics.
 | Browser/API or Soapy PTT stop | Network session graceful release | Bounded queue drain, then full cleanup |
 | Physical microphone PTT release | Physical-owner graceful release | Bounded queue drain, then full cleanup |
 | TX stream socket error or disconnect | Network stream disconnect | Immediate full cleanup |
-| Missing network samples | Network data watchdog | Immediate full cleanup and session invalidation |
+| Missing network samples or silence | PTT remains asserted; absent samples render as silence | No ownership or PTT change |
 | TX lease expiry | Network lease watchdog | Immediate full cleanup and session invalidation |
 | Maximum-key timeout | Shared controller timer | Immediate full cleanup and owner release |
 | Tune lease or hard-limit expiry | Tune controller release | Immediate full cleanup and lease invalidation |
@@ -36,17 +36,16 @@ faulted state, and exposes the cleanup failure through diagnostics.
 | Failure during TX preparation | Start-failure rollback | Cleanup of every step that may have been attempted |
 | Failure during cleanup | Cleanup executor | Continue attempting every later safety action; report failure |
 
-An audio-scheduler underrun is deliberately not itself an unkey event. The
-scheduler substitutes zero I/Q, records the missing frames, and lets the data
-watchdog unkey if useful samples do not resume within its bounded interval.
-This avoids relay chatter for a single late buffer while retaining a hard
-failure limit.
+An audio-scheduler underrun is deliberately not an unkey event. The scheduler
+substitutes zero I/Q and records the missing frames. The TX lease and shared
+maximum-key timer remain bounded failure limits, while explicit stop,
+disconnect, shutdown, or hardware failure still invokes cleanup.
 
 ## Offline verification
 
 `tx-termination-matrix-test` composes the real ownership controller, network TX
 session, watchdogs, and cleanup planner with a mock cleanup backend. It covers
-explicit stop, physical PTT release, stream disconnect, missing-data timeout,
+explicit stop, physical PTT release, stream disconnect, missing-sample silence,
 lease expiry, maximum-key timeout, process shutdown, partial start failure, and
 every individual cleanup-action failure. Each case must attempt the full plan
 and leave no transmitter owner behind.

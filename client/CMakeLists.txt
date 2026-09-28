@@ -8,6 +8,7 @@ add_library(flex1500_client_http STATIC
     src/http_client.cpp
     src/iq_stream.cpp
     src/pipewire_source.cpp
+    src/pipewire_sink.cpp
     src/rig_control.cpp
 )
 target_include_directories(flex1500_client_http PUBLIC include)

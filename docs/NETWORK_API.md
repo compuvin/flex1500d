@@ -79,7 +79,7 @@ daemon process.
 A normal HTTP/Soapy PTT stop and physical-microphone release stop accepting new
 samples, drain meaningful frames already held by the DSP and USB schedulers,
 and then unkey. The drain is bounded to one second; frames still pending at that
-deadline are discarded and counted. Disconnect, lease/data watchdog,
+deadline are discarded and counted. Disconnect, lease watchdog,
 maximum-key timeout, error, ownership preemption, shutdown, and emergency paths
 do not wait for queued audio: they invoke immediate safe-unkey cleanup.
 
@@ -304,7 +304,8 @@ uses the general leased raw-I/Q routes described below.
 
 The transmit-enabled daemon implements leased general network-transmit session,
 PTT, and sample-upload routes for mono `s16le` audio and `cs16le` I/Q. They use
-a 500 ms prebuffer, 15-second lease watchdog, one-second keyed-data watchdog,
+a 4,096-frame (approximately 85 ms at 48 kHz) prebuffer, 15-second lease
+watchdog,
 the shared maximum-key timer, mandatory output limiting, and disconnect unkey.
 The route contract and SoapySDR mapping are specified in
 [General TX/PTT API design](GENERAL_TX_API_DESIGN.md). These routes have offline
@@ -315,8 +316,10 @@ supported paths, limitations, and normal and emergency unkey procedures are in
 the [transmit operator guide](TX_OPERATOR_GUIDE.md).
 
 The browser test page uses `POST /v1/tx/audio` for bounded mono `s16le` PCM
-blocks under the same TX lease. The first block attaches the logical stream;
-each accepted block refreshes the one-second sample-data watchdog. Bodies must
+blocks under the same TX lease. The first block attaches the logical stream.
+Silence or a temporary absence of later audio blocks does not change PTT
+state; the TX lease, maximum-key timer, disconnect handling, and explicit PTT
+stop remain authoritative. Bodies must
 contain an even number of bytes and are limited to 9,600 bytes (100 ms at
 48 kHz). This route accepts only an audio-source session and does not replace
 the persistent `CONNECT` tunnel intended for native clients.

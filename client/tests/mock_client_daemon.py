@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import http.server
+import os
 import shutil
 import signal
 import socket
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -26,6 +28,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     frequency_sets = 0
     mode_sets = 0
     bandwidth_sets = 0
+    tx_sessions = 0
+    tx_audio_chunks = 0
+    tx_starts = 0
+    tx_stops = 0
+    tx_releases = 0
 
     def reply(self, status: int, body: bytes) -> None:
         self.send_response(status)
@@ -58,6 +65,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/v1/control/owner":
             Handler.acquired += 1
             self.reply(201, b'{"owner":true,"lease":31337}\n')
+        elif (self.path == "/v1/tx/sessions" and
+              self.headers.get("X-Flex1500-Control-Lease") == "31337"):
+            Handler.tx_sessions += 1
+            self.reply(201, b'{"lease":4242,"state":"reserved"}\n')
+        elif (self.path == "/v1/tx/audio" and
+              self.headers.get("X-Flex1500-Control-Lease") == "31337" and
+              self.headers.get("X-Flex1500-TX-Lease") == "4242"):
+            Handler.tx_audio_chunks += 1
+            self.reply(200, b'{"state":"streaming"}\n')
         else:
             self.reply(404, b'{"error":"not found"}\n')
 
@@ -69,12 +85,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/v1/radio/frequency/7100000" and valid:
             Handler.frequency_sets += 1
             self.reply(200, b'{"frequency_hz":7100000,"rx_filter":6}\n')
+        elif self.path == "/v1/radio/frequency/28475000" and valid:
+            Handler.frequency_sets += 1
+            self.reply(200, b'{"frequency_hz":28475000,"rx_filter":2}\n')
+        elif self.path == "/v1/radio/mode/usb" and valid:
+            Handler.mode_sets += 1
+            self.reply(200, b'{"rx_mode":"usb","rx_bandwidth_hz":2700}\n')
         elif self.path == "/v1/radio/mode/lsb" and valid:
             Handler.mode_sets += 1
             self.reply(200, b'{"rx_mode":"lsb","rx_bandwidth_hz":2700}\n')
         elif self.path == "/v1/radio/bandwidth/2400" and valid:
             Handler.bandwidth_sets += 1
             self.reply(200, b'{"rx_bandwidth_hz":2400}\n')
+        elif (self.path == "/v1/tx/ptt/start" and valid and
+              self.headers.get("X-Flex1500-TX-Lease") == "4242"):
+            Handler.tx_starts += 1
+            self.reply(200, b'{"state":"keyed"}\n')
+        elif (self.path == "/v1/tx/ptt/stop" and valid and
+              self.headers.get("X-Flex1500-TX-Lease") == "4242"):
+            Handler.tx_stops += 1
+            self.reply(200, b'{"state":"reserved"}\n')
+        elif (self.path == "/v1/tx/sessions/keepalive" and valid and
+              self.headers.get("X-Flex1500-TX-Lease") == "4242"):
+            self.reply(200, b'{"state":"keyed"}\n')
         else:
             self.reply(410, b'{"error":"owner_stale"}\n')
 
@@ -83,6 +116,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/v1/control/owner" and valid:
             Handler.releases += 1
             self.reply(200, b'{"owner":false,"lease":31337}\n')
+        elif (self.path == "/v1/tx/sessions/current" and valid and
+              self.headers.get("X-Flex1500-TX-Lease") == "4242"):
+            Handler.tx_releases += 1
+            self.reply(200, b'{"state":"released"}\n')
         else:
             self.reply(410, b'{"error":"owner_stale"}\n')
 
@@ -104,11 +141,15 @@ def main() -> int:
             rigctl_port = reservation.getsockname()[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        state_home = tempfile.mkdtemp(prefix="flex1500-client-test-")
+        environment = os.environ.copy()
+        environment["XDG_STATE_HOME"] = state_home
         process = subprocess.Popen(
             [sys.argv[1], "--host", "127.0.0.1", "--port",
              str(server.server_address[1]), "--rigctl-port",
              str(rigctl_port)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=environment,
         )
         rig = None
         for _ in range(30):
@@ -137,7 +178,7 @@ def main() -> int:
                     b"\n", b"\n", b"0\n", b"0\n", b"0\n",
                     b"0\n", b"0\n", b"0\n",
                 ]),
-                (b"f\n", [b"RPRT -11\n"]),
+                (b"f\n", [b"28475000\n"]),
                 (b"m\n", [b"USB\n", b"2700\n"]),
                 (b"F 7100000\n", [b"RPRT 0\n"]),
                 (b"M LSB 2400\n", [b"RPRT 0\n"]),
@@ -145,7 +186,10 @@ def main() -> int:
                 (b"t\n", [b"0\n"]),
                 (b"F VFOA 7100000\n", [b"RPRT 0\n"]),
                 (b"M VFOA LSB 2400\n", [b"RPRT 0\n"]),
-                (b"T VFOA 1\n", [b"RPRT -4\n"]),
+                (b"T VFOA 3\n", [b"RPRT 0\n"]),
+                (b"t\n", [b"1\n"]),
+                (b"T VFOA 0\n", [b"RPRT 0\n"]),
+                (b"t\n", [b"0\n"]),
             )
             for request, expected_lines in exchanges:
                 wire.write(request)
@@ -158,6 +202,21 @@ def main() -> int:
                               "expected", expected, stdout, stderr,
                               file=sys.stderr)
                         return 1
+                if request == b"\\dump_state\n":
+                    with socket.create_connection(
+                            ("127.0.0.1", rigctl_port), timeout=0.5) as competing:
+                        competing.settimeout(0.5)
+                        competing.sendall(b"f\n")
+                        try:
+                            rejected_reply = competing.recv(32)
+                        except ConnectionResetError:
+                            rejected_reply = b""
+                        if rejected_reply != b"":
+                            process.terminate()
+                            stdout, stderr = process.communicate(timeout=3)
+                            print("competing rig connection was not rejected",
+                                  stdout, stderr, file=sys.stderr)
+                            return 1
         rigctl = shutil.which("rigctl")
         if rigctl is not None:
             check = subprocess.run(
@@ -178,23 +237,45 @@ def main() -> int:
         server.shutdown()
         thread.join()
 
+        state_file = os.path.join(state_home, "flex1500-client", "state.conf")
+        try:
+            with open(state_file, encoding="ascii") as saved:
+                state_contents = saved.read()
+        except OSError as error:
+            print("client state was not saved:", error, file=sys.stderr)
+            shutil.rmtree(state_home, ignore_errors=True)
+            return 1
+        shutil.rmtree(state_home, ignore_errors=True)
+
     if process.returncode != 0:
         print(stdout, stderr, file=sys.stderr)
         return process.returncode
+    if "frequency_hz=7100000\nmode=lsb\n" != state_contents:
+        print("unexpected saved client state:", repr(state_contents),
+              file=sys.stderr)
+        return 1
     if (Handler.acquired != 1 or Handler.keepalives < 1 or
             Handler.releases != 1 or Handler.iq_requests < 1 or
-            Handler.frequency_sets != 2 or Handler.mode_sets != 2 or
-            Handler.bandwidth_sets != 2):
+            Handler.frequency_sets != 3 or Handler.mode_sets != 3 or
+            Handler.bandwidth_sets != 2 or Handler.tx_sessions != 1 or
+            Handler.tx_audio_chunks < 1 or Handler.tx_starts != 1 or
+            Handler.tx_stops != 1 or Handler.tx_releases != 1):
         print("unexpected ownership lifecycle:", Handler.acquired,
               Handler.keepalives, Handler.releases, Handler.iq_requests,
               Handler.frequency_sets, Handler.mode_sets,
-              Handler.bandwidth_sets,
+              Handler.bandwidth_sets, Handler.tx_sessions,
+              Handler.tx_audio_chunks, Handler.tx_starts, Handler.tx_stops,
+              Handler.tx_releases,
               file=sys.stderr)
         return 1
     required = ("connected to 127.0.0.1", "FLEX-1500 usb",
                 "station control acquired", "RX IQ stream connected",
-                "Hamlib-compatible control ready", "frequency set to 7100000",
+                "Hamlib-compatible control ready",
+                "restored radio to 28475000 Hz usb",
+                "frequency set to 7100000",
                 "mode set to LSB; bandwidth 2400",
+                "Hamlib PTT keyed using FLEX-1500 TX audio",
+                "rejected competing local Hamlib connection",
                 "station control released")
     if any(text not in stdout for text in required):
         print("unexpected client output:\n" + stdout, file=sys.stderr)

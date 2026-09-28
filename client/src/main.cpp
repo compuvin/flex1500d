@@ -4,6 +4,7 @@
 #include "flex1500/client/audio_ring.hpp"
 #include "flex1500/client/iq_stream.hpp"
 #include "flex1500/client/pipewire_source.hpp"
+#include "flex1500/client/pipewire_sink.hpp"
 #include "flex1500/client/rig_control.hpp"
 extern "C" {
 #include "flex1500/dsp.h"
@@ -12,11 +13,15 @@ extern "C" {
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <csignal>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <cmath>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -28,6 +33,89 @@ namespace {
 
 std::atomic_bool stop_requested{false};
 constexpr float pipewire_receive_gain = 0.1f;
+constexpr std::uint64_t default_frequency_hz = 28475000;
+
+struct ClientState {
+    std::uint64_t frequency_hz = default_frequency_hz;
+    std::string mode = "usb";
+};
+
+std::optional<std::filesystem::path> state_path()
+{
+    if (const char *directory = std::getenv("XDG_STATE_HOME");
+        directory && *directory)
+        return std::filesystem::path(directory) / "flex1500-client" /
+               "state.conf";
+    if (const char *directory = std::getenv("HOME"); directory && *directory)
+        return std::filesystem::path(directory) / ".local" / "state" /
+               "flex1500-client" / "state.conf";
+    return std::nullopt;
+}
+
+ClientState load_state()
+{
+    ClientState state;
+    const auto path = state_path();
+    if (!path) return state;
+    std::ifstream input(*path);
+    std::string line;
+    while (std::getline(input, line)) {
+        const std::size_t separator = line.find('=');
+        if (separator == std::string::npos) continue;
+        const std::string name = line.substr(0, separator);
+        const std::string value = line.substr(separator + 1);
+        try {
+            if (name == "frequency_hz") {
+                std::size_t consumed = 0;
+                const auto frequency = std::stoull(value, &consumed);
+                if (consumed == value.size() && frequency >= 100000 &&
+                    frequency <= 54000000)
+                    state.frequency_hz = frequency;
+            } else if (name == "mode" &&
+                       (value == "am" || value == "fm" || value == "usb" ||
+                        value == "lsb" || value == "cw")) {
+                state.mode = value;
+            }
+        } catch (const std::exception &) {
+        }
+    }
+    return state;
+}
+
+void save_state(const ClientState &state)
+{
+    const auto path = state_path();
+    if (!path) {
+        std::cerr << "[state] HOME and XDG_STATE_HOME are unavailable; "
+                     "state not saved\n";
+        return;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(path->parent_path(), error);
+    if (error) {
+        std::cerr << "[state] cannot create " << path->parent_path() << ": "
+                  << error.message() << '\n';
+        return;
+    }
+    const std::filesystem::path temporary = path->string() + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) {
+            std::cerr << "[state] cannot write " << temporary << '\n';
+            return;
+        }
+        output << "frequency_hz=" << state.frequency_hz << '\n'
+               << "mode=" << state.mode << '\n';
+        if (!output) {
+            std::cerr << "[state] failed while writing " << temporary << '\n';
+            return;
+        }
+    }
+    std::filesystem::rename(temporary, *path, error);
+    if (error)
+        std::cerr << "[state] cannot replace " << *path << ": "
+                  << error.message() << '\n';
+}
 
 void request_stop(int)
 {
@@ -101,12 +189,21 @@ void require_ok(const char *operation,
 
 class BridgeSession {
 public:
-    BridgeSession(std::string host, std::uint16_t port)
-        : host_(std::move(host)), client_(host_, port)
+    BridgeSession(std::string host, std::uint16_t port,
+                  flex1500::client::AudioRing &transmit_audio,
+                  ClientState restored_state)
+        : host_(std::move(host)), client_(host_, port),
+          mode_(std::move(restored_state.mode)),
+          frequency_hz_(restored_state.frequency_hz),
+          transmit_audio_(transmit_audio)
     {
     }
 
-    ~BridgeSession() { release(); }
+    ~BridgeSession()
+    {
+        set_ptt(false);
+        release();
+    }
 
     void connect()
     {
@@ -133,10 +230,31 @@ public:
         std::cout << '\n';
 
         std::lock_guard<std::mutex> lock(mutex_);
-        frequency_hz_ = frequency.value_or(0);
-        mode_ = mode;
+        const bool restore_tuning = !frequency.has_value();
+        if (frequency) {
+            frequency_hz_ = *frequency;
+            mode_ = mode;
+        } else {
+            std::cout << "[state] daemon has no tuning state; selected "
+                      << frequency_hz_ << " Hz " << mode_ << " for restore\n";
+        }
         bandwidth_hz_ = static_cast<std::uint32_t>(bandwidth);
         acquire();
+        if (restore_tuning && lease_) {
+            const auto mode_response = client_.request(
+                "PUT", "/v1/radio/mode/" + mode_, lease_headers());
+            require_ok("restore radio mode", mode_response);
+            if (const auto applied = json_unsigned(mode_response.body,
+                                                   "rx_bandwidth_hz"))
+                bandwidth_hz_ = static_cast<std::uint32_t>(*applied);
+            const auto frequency_response = client_.request(
+                "PUT", "/v1/radio/frequency/" +
+                           std::to_string(frequency_hz_),
+                lease_headers());
+            require_ok("restore radio frequency", frequency_response);
+            std::cout << "[state] restored radio to " << frequency_hz_
+                      << " Hz " << mode_ << '\n';
+        }
         connected_ = true;
     }
 
@@ -146,6 +264,17 @@ public:
         return mode_;
     }
 
+    ClientState client_state() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return {frequency_hz_, mode_};
+    }
+
+    bool consume_tx_fault()
+    {
+        return tx_fault_pending_.exchange(false);
+    }
+
     flex1500::client::RigState rig_state() const
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -153,7 +282,8 @@ public:
         for (char &character : presented_mode)
             character = static_cast<char>(std::toupper(
                 static_cast<unsigned char>(character)));
-        return {frequency_hz_, presented_mode, bandwidth_hz_, lease_.has_value()};
+        return {frequency_hz_, presented_mode, bandwidth_hz_,
+                lease_.has_value(), tx_keyed_};
     }
 
     bool set_frequency(std::uint64_t frequency_hz)
@@ -203,6 +333,76 @@ public:
         return true;
     }
 
+    bool set_ptt(bool enabled)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!enabled) {
+            tx_stop_.store(true);
+            lock.unlock();
+            if (tx_thread_.joinable()) tx_thread_.join();
+            lock.lock();
+            if (!tx_lease_) return true;
+            const auto headers = tx_headers();
+            const auto stopped = client_.request(
+                "PUT", "/v1/tx/ptt/stop", headers);
+            const auto released = client_.request(
+                "DELETE", "/v1/tx/sessions/current", headers);
+            tx_keyed_ = false;
+            tx_lease_.reset();
+            if (stopped.status < 200 || stopped.status >= 300)
+                std::cerr << "[tx] PTT stop failed: HTTP " << stopped.status
+                          << ": " << stopped.body;
+            if (released.status < 200 || released.status >= 300)
+                std::cerr << "[tx] session release failed: HTTP "
+                          << released.status << ": " << released.body;
+            return stopped.status >= 200 && stopped.status < 300 &&
+                   released.status >= 200 && released.status < 300;
+        }
+        if (tx_keyed_) return true;
+        if (!lease_ || frequency_hz_ == 0 || mode_ == "fm" || mode_ == "cw")
+            return false;
+        transmit_audio_.clear();
+        const std::string profile =
+            "{\"mode\":\"" + mode_ +
+            "\",\"drive_percent\":100,\"source\":\"audio\","
+            "\"sample_format\":\"s16le\",\"sample_rate\":48000,"
+            "\"channels\":1}";
+        const auto created = client_.request(
+            "POST", "/v1/tx/sessions", lease_headers(), profile);
+        if (created.status != 201) {
+            std::cerr << "[tx] session acquire failed: HTTP "
+                      << created.status << ": " << created.body;
+            return false;
+        }
+        tx_lease_ = json_unsigned(created.body, "lease");
+        if (!tx_lease_) {
+            std::cerr << "[tx] session acquire response omitted its lease\n";
+            return false;
+        }
+        std::string silence(4096 * sizeof(std::int16_t), '\0');
+        const auto prebuffer = client_.request(
+            "POST", "/v1/tx/audio", tx_headers(), silence);
+        if (prebuffer.status < 200 || prebuffer.status >= 300) {
+            std::cerr << "[tx] prebuffer upload failed: HTTP "
+                      << prebuffer.status << ": " << prebuffer.body;
+            release_tx_locked();
+            return false;
+        }
+        const auto started = client_.request(
+            "PUT", "/v1/tx/ptt/start", tx_headers());
+        if (started.status < 200 || started.status >= 300) {
+            std::cerr << "[tx] PTT start failed: HTTP " << started.status
+                      << ": " << started.body;
+            release_tx_locked();
+            return false;
+        }
+        tx_keyed_ = true;
+        tx_stop_.store(false);
+        tx_thread_ = std::thread([this] { upload_tx_audio(); });
+        std::cout << "[tx] Hamlib PTT keyed using FLEX-1500 TX audio\n";
+        return true;
+    }
+
     void maintain()
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -246,6 +446,104 @@ private:
         return {{"X-Flex1500-Control-Lease", std::to_string(*lease_)}};
     }
 
+    std::map<std::string, std::string> tx_headers() const
+    {
+        auto headers = lease_headers();
+        headers["X-Flex1500-TX-Lease"] = std::to_string(*tx_lease_);
+        return headers;
+    }
+
+    void release_tx_locked() noexcept
+    {
+        if (!tx_lease_) return;
+        try {
+            const auto response = client_.request(
+                "DELETE", "/v1/tx/sessions/current", tx_headers());
+            if (response.status < 200 || response.status >= 300)
+                std::cerr << "[tx] session cleanup failed: HTTP "
+                          << response.status << ": " << response.body;
+        } catch (const std::exception &error) {
+            std::cerr << "[tx] session cleanup failed: " << error.what()
+                      << '\n';
+        }
+        tx_keyed_ = false;
+        tx_lease_.reset();
+    }
+
+    void fail_tx_locked(const char *operation,
+                        const flex1500::client::HttpResponse &response)
+    {
+        std::cerr << "[tx] " << operation << " failed: HTTP "
+                  << response.status << ": " << response.body;
+        tx_stop_.store(true);
+        release_tx_locked();
+        tx_fault_pending_.store(true);
+    }
+
+    void fail_tx_locked(const char *operation, const std::exception &error)
+    {
+        std::cerr << "[tx] " << operation << " failed: " << error.what()
+                  << '\n';
+        tx_stop_.store(true);
+        release_tx_locked();
+        tx_fault_pending_.store(true);
+    }
+
+    void upload_tx_audio()
+    {
+        std::vector<float> input(4800);
+        auto last_keepalive = std::chrono::steady_clock::now();
+        while (!tx_stop_.load()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_keepalive >= std::chrono::seconds(5)) {
+                try {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (!tx_lease_) return;
+                    const auto keepalive = client_.request(
+                        "PUT", "/v1/tx/sessions/keepalive", tx_headers());
+                    if (keepalive.status < 200 || keepalive.status >= 300) {
+                        fail_tx_locked("TX keepalive", keepalive);
+                        return;
+                    }
+                    last_keepalive = now;
+                } catch (const std::exception &error) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    fail_tx_locked("TX keepalive", error);
+                    return;
+                }
+            }
+            const std::size_t count = transmit_audio_.pop(
+                input.data(), input.size());
+            if (count == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                continue;
+            }
+            std::string pcm(count * sizeof(std::int16_t), '\0');
+            for (std::size_t index = 0; index < count; ++index) {
+                const float sample = input[index];
+                const std::int16_t output = static_cast<std::int16_t>(std::lrint(
+                    std::max(-1.0f, std::min(1.0f, sample)) * 32767.0f));
+                pcm[index * 2] = static_cast<char>(output & 0xff);
+                pcm[index * 2 + 1] = static_cast<char>(
+                    (static_cast<std::uint16_t>(output) >> 8) & 0xff);
+            }
+            try {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!tx_lease_) return;
+                const auto uploaded = client_.request(
+                    "POST", "/v1/tx/audio", tx_headers(), pcm);
+                if (uploaded.status < 200 || uploaded.status >= 300) {
+                    fail_tx_locked("audio upload", uploaded);
+                    return;
+                }
+            } catch (const std::exception &error) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                fail_tx_locked("audio upload", error);
+                return;
+            }
+        }
+    }
+
     void acquire()
     {
         const auto response = client_.request("POST", "/v1/control/owner");
@@ -280,11 +578,17 @@ private:
     flex1500::client::HttpClient client_;
     mutable std::mutex mutex_;
     std::optional<std::uint64_t> lease_;
+    std::optional<std::uint64_t> tx_lease_;
     bool connected_ = false;
     bool reported_receive_only_ = false;
     std::string mode_ = "am";
     std::uint64_t frequency_hz_ = 0;
     std::uint32_t bandwidth_hz_ = 6000;
+    flex1500::client::AudioRing &transmit_audio_;
+    std::atomic_bool tx_stop_{false};
+    std::atomic_bool tx_fault_pending_{false};
+    bool tx_keyed_ = false;
+    std::thread tx_thread_;
 };
 
 flex1500_demod_mode demod_mode(const std::string &name)
@@ -333,12 +637,17 @@ int main(int argc, char **argv)
 
         std::signal(SIGINT, request_stop);
         std::signal(SIGTERM, request_stop);
-        BridgeSession session(host, port);
-        session.connect();
         flex1500::client::AudioRing audio(96000);
+        flex1500::client::AudioRing transmit_audio(4800);
+        BridgeSession session(host, port, transmit_audio, load_state());
+        session.connect();
         flex1500::client::PipeWireSource pipewire(audio);
+        flex1500::client::PipeWireSink pipewire_tx(transmit_audio);
         pipewire.start();
         std::cout << "[audio] PipeWire source ready: FLEX-1500 RX\n";
+        pipewire_tx.start();
+        std::cout << "[audio] PipeWire sink ready: FLEX-1500 TX "
+                     "(PTT remains disabled)\n";
 
         flex1500_dsp dsp{};
         const flex1500_dsp_config dsp_config = {
@@ -357,6 +666,8 @@ int main(int argc, char **argv)
                 [&session](const std::string &mode, std::int32_t bandwidth) {
                     return session.set_mode(mode, bandwidth);
                 },
+                [&session](bool enabled) { return session.set_ptt(enabled); },
+                [&session] { return session.consume_tx_fault(); },
             });
         rig.start();
         std::cout << "[rig] Hamlib-compatible control ready on "
@@ -419,6 +730,7 @@ int main(int argc, char **argv)
         pipewire.stop();
         std::cout << "[audio] RX stopped; dropped=" << audio.dropped()
                   << " underrun=" << audio.underruns() << '\n';
+        save_state(session.client_state());
         session.release();
         return 0;
     } catch (const std::exception &error) {

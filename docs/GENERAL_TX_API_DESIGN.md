@@ -135,7 +135,7 @@ The required network sequence is:
 
 The 180-second default maximum-key timer starts at successful PTT start. Neither
 samples nor keepalives extend it. A short lease watchdog and a shorter stream-
-data watchdog stop TX earlier when the client disappears. Closing the upload
+control-lease watchdog stops TX when the client disappears. Closing the upload
 connection while keyed is a disconnect-unkey event. If the control request
 vanishes after keying but before its response arrives, ownership and watchdogs
 remain deterministic and will unkey unless the same lease resumes keepalives.
@@ -197,7 +197,8 @@ Future Soapy support uses the same internal operations even if the adapter
 hides the HTTP details. `setupStream` validates the proposed format;
 `activateStream` acquires a `soapy` owner, establishes/prebuffers the upload,
 and keys only when the caller requests TX activation. `writeStream` supplies
-samples and refreshes the stream-data watchdog. `deactivateStream`,
+samples while an independent control keepalive preserves asserted PTT through
+silence. `deactivateStream`,
 `closeStream`, device destruction, connection loss, and write timeout all
 unkey and release the owner.
 

@@ -62,7 +62,8 @@ Within that station lease, individual TX operations are represented as follows:
 - SoapySDR TX uses an HTTP raw-I/Q lease bound to one activated TX stream
   instance. Deactivating or closing that stream releases the TX operation but
   not station control. Destroying the device releases station control after TX
-  cleanup; losing transport or exceeding a stream-data timeout unkeys safely.
+  cleanup; losing transport or the control lease unkeys safely. Silence and
+  temporary sample starvation do not override asserted PTT.
 
 An HTTP token or Soapy stream belonging to a non-owner is rejected and cannot
 stop, renew, or feed another owner's transmission. Failed acquisition does not
@@ -113,7 +114,7 @@ the safe prepared state.
 The maximum-key timer starts when the controller accepts the owner and is not
 extended by audio traffic, HTTP keepalives, or Soapy writes. Its expiry always
 attempts unkey and releases ownership. Shorter per-owner liveness watchdogs
-(Tune lease, future HTTP lease, and future Soapy stream-data timeout) may stop
+(Tune lease and HTTP/Soapy TX leases) may stop
 TX earlier. Process signals and normal daemon shutdown use the identical owner
 stop path before TX preparation is disabled.
 

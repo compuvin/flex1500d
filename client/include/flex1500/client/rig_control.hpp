@@ -16,12 +16,15 @@ struct RigState {
     std::string mode = "AM";
     std::uint32_t bandwidth_hz = 6000;
     bool writable = false;
+    bool ptt = false;
 };
 
 struct RigControlCallbacks {
     std::function<RigState()> state;
     std::function<bool(std::uint64_t)> set_frequency;
     std::function<bool(const std::string &, std::int32_t)> set_mode;
+    std::function<bool(bool)> set_ptt;
+    std::function<bool()> consume_tx_fault;
 };
 
 class RigControlServer {

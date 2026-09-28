@@ -70,7 +70,12 @@ int main(void)
     CHECK(flex1500_network_tx_ptt_start(&session, 43, 1003) ==
           FLEX1500_NETWORK_TX_OK);
     CHECK(flex1500_network_tx_tick(&session, 2003) ==
-          FLEX1500_NETWORK_TX_DATA_TIMEOUT);
+          FLEX1500_NETWORK_TX_OK);
+    CHECK(c.stops == 2 && session.reserved && session.keyed);
+    CHECK(flex1500_network_tx_keepalive(&session, 43, 2003) ==
+          FLEX1500_NETWORK_TX_OK);
+    CHECK(flex1500_network_tx_release(&session, 43) ==
+          FLEX1500_NETWORK_TX_OK);
     CHECK(c.stops == 3 && !session.reserved);
 
     CHECK(flex1500_network_tx_acquire(&session, &audio, 44, 3000) ==

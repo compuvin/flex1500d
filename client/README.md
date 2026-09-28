@@ -23,10 +23,24 @@ queries and ownership-authorized changes for AM, FM, USB, LSB, and CW. Mode
 requests carry Hamlib's passband value into the daemon's receive-bandwidth
 state; the companion's audio DSP currently continues to use its validated
 mode-default filter. The capability handshake required by Hamlib NET rigctl
-clients such as WSJT-X is supported. PTT status reports receive, and PTT-on requests return
-Hamlib's not-implemented error until the separately reviewed transmit-audio
-stage exists. The initial server accepts one local rig-control connection at a
-time and is deliberately bound only to loopback.
+clients such as WSJT-X is supported. PTT status reports receive, and PTT-on
+requests return Hamlib's not-implemented error until the separately reviewed
+transmit-audio stage exists. The initial server accepts one local rig-control
+connection at a time and is deliberately bound only to loopback. The first
+connected application retains that connection; later connection attempts are
+rejected rather than displacing the active program.
+
+Hamlib applications commonly query the rig before sending their selected
+working frequency. When a newly started daemon has no frequency yet, the
+bridge presents the frequency and mode saved at its last orderly shutdown.
+The first-run defaults are 28.475 MHz and USB. This local handshake state is
+stored under `$XDG_STATE_HOME/flex1500-client/state.conf`, or under
+`~/.local/state/flex1500-client/state.conf` when `XDG_STATE_HOME` is unset.
+When this client acquires station control, it applies that state to a daemon
+whose frequency is unset, so the physical radio returns to the same operating
+point. A receive-only secondary client never performs this restore. Subsequent
+application frequency and mode commands update the radio and the state that
+will be saved at clean shutdown.
 
 Building the client requires the PipeWire development package in addition to
 the daemon's normal build dependencies:
@@ -59,9 +73,14 @@ rigctl -m 2 -r 127.0.0.1:4532 m
 Stop it with `Ctrl+C`; a held station-control lease is explicitly released.
 The PipeWire source exists only while the client is running and appears in
 `wpctl status`, PipeWire-aware applications, and PulseAudio-compatible
-applications. The current program does not yet provide gain or squelch through
-rig control, an adjustable local DSP filter, a transmit audio sink, or
-transmit PTT.
+applications. The client publishes a `FLEX-1500 TX` PipeWire sink and captures
+its 48 kHz mono audio into a bounded 4,800-frame (100 ms) local buffer. Hamlib
+PTT uses the daemon's existing leased audio session, 4,096-frame prebuffer,
+watchdog, maximum-key timer, and stop/release cleanup. This path is available
+only when the daemon was explicitly started in transmit mode and remains
+experimental pending live dummy-load validation. The current program does not
+yet provide gain or squelch through rig control or an adjustable local DSP
+filter.
 
 Future development is described in the
 [companion bridge design](../docs/COMPANION_CLIENT_DESIGN.md). Planned stages

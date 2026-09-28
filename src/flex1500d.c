@@ -978,8 +978,7 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
         }
         flex1500_network_tx_result network_tick = flex1500_network_tx_tick(
             &network_tx, monotonic_ms());
-        if (network_tick == FLEX1500_NETWORK_TX_EXPIRED ||
-            network_tick == FLEX1500_NETWORK_TX_DATA_TIMEOUT) {
+        if (network_tick == FLEX1500_NETWORK_TX_EXPIRED) {
             ++tune_control.diagnostics.watchdog_stops;
             if (tx_client >= 0) close(tx_client);
             tx_client = -1;

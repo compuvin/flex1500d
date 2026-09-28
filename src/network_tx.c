@@ -168,15 +168,12 @@ flex1500_network_tx_result flex1500_network_tx_tick(
     flex1500_network_tx *session, uint64_t now_ms)
 {
     if (session == NULL || !session->reserved) return FLEX1500_NETWORK_TX_OK;
-    bool data_timeout = session->keyed &&
-        now_ms - session->last_data_ms >= FLEX1500_NETWORK_TX_DATA_MS;
     bool expired = now_ms - session->renewed_ms >= FLEX1500_NETWORK_TX_LEASE_MS;
-    if (!data_timeout && !expired) return FLEX1500_NETWORK_TX_OK;
+    if (!expired) return FLEX1500_NETWORK_TX_OK;
     flex1500_network_tx_result stopped = stop_if_keyed(session);
     clear_session(session);
     if (stopped != FLEX1500_NETWORK_TX_OK) return stopped;
-    return data_timeout ? FLEX1500_NETWORK_TX_DATA_TIMEOUT
-                        : FLEX1500_NETWORK_TX_EXPIRED;
+    return FLEX1500_NETWORK_TX_EXPIRED;
 }
 
 void flex1500_network_tx_reconcile(flex1500_network_tx *session)
@@ -191,6 +188,6 @@ void flex1500_network_tx_reconcile(flex1500_network_tx *session)
 const char *flex1500_network_tx_result_name(flex1500_network_tx_result result)
 {
     static const char *names[] = {"ok", "disabled", "busy", "invalid",
-        "stale", "not_ready", "hardware_error", "expired", "data_timeout"};
-    return result <= FLEX1500_NETWORK_TX_DATA_TIMEOUT ? names[result] : "unknown";
+        "stale", "not_ready", "hardware_error", "expired"};
+    return result <= FLEX1500_NETWORK_TX_EXPIRED ? names[result] : "unknown";
 }

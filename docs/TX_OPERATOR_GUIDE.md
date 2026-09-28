@@ -117,8 +117,9 @@ carrier's 5 W indication while AM is keyed without audio.
 Every owner shares a non-disableable maximum-key timer. It defaults to 180
 seconds and may be configured from 30 through 1800 seconds while unkeyed. HTTP
 TX additionally requires a prebuffer, a live sample stream, lease renewals,
-and continuing sample delivery. Lease expiry, data timeout, stream disconnect,
-or maximum-key timeout requests automatic unkey and RX restoration.
+and an asserted PTT state. Silence or missing audio blocks do not release PTT.
+Lease expiry, stream disconnect, or maximum-key timeout requests automatic
+unkey and RX restoration.
 
 These mechanisms reduce risk but do not guarantee that commands reach hardware
 after a USB failure. Watch the external radio and station instruments.

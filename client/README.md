@@ -87,6 +87,9 @@ Future development is described in the
 include additional receiver controls and—after separate safety review—the
 existing ownership-aware TX API.
 
+Recorded offline, dummy-load, and live station results are in
+[companion client testing](../docs/COMPANION_CLIENT_TESTING.md).
+
 The client is enabled explicitly with `FLEX1500_BUILD_CLIENT=ON`; the daemon's
 normal build and Debian package do not include it. A separate client-only
 package can be introduced once the bridge is useful outside development.

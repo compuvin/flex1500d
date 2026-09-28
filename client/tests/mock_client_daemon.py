@@ -30,7 +30,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     bandwidth_sets = 0
     tx_sessions = 0
     tx_audio_chunks = 0
+    tx_stream_bytes = 0
     tx_starts = 0
+    tx_start_attempts = 0
     tx_stops = 0
     tx_releases = 0
 
@@ -68,6 +70,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif (self.path == "/v1/tx/sessions" and
               self.headers.get("X-Flex1500-Control-Lease") == "31337"):
             Handler.tx_sessions += 1
+            Handler.tx_stream_stop.clear()
             self.reply(201, b'{"lease":4242,"state":"reserved"}\n')
         elif (self.path == "/v1/tx/audio" and
               self.headers.get("X-Flex1500-Control-Lease") == "31337" and
@@ -99,8 +102,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, b'{"rx_bandwidth_hz":2400}\n')
         elif (self.path == "/v1/tx/ptt/start" and valid and
               self.headers.get("X-Flex1500-TX-Lease") == "4242"):
-            Handler.tx_starts += 1
-            self.reply(200, b'{"state":"keyed"}\n')
+            Handler.tx_start_attempts += 1
+            if Handler.tx_start_attempts == 1:
+                self.reply(409, b'{"error":"tx_not_ready"}\n')
+            else:
+                Handler.tx_starts += 1
+                self.reply(200, b'{"state":"keyed"}\n')
         elif (self.path == "/v1/tx/ptt/stop" and valid and
               self.headers.get("X-Flex1500-TX-Lease") == "4242"):
             Handler.tx_stops += 1
@@ -119,12 +126,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif (self.path == "/v1/tx/sessions/current" and valid and
               self.headers.get("X-Flex1500-TX-Lease") == "4242"):
             Handler.tx_releases += 1
+            Handler.tx_stream_stop.set()
             self.reply(200, b'{"state":"released"}\n')
         else:
             self.reply(410, b'{"error":"owner_stale"}\n')
 
     def log_message(self, _format: str, *_args: object) -> None:
         pass
+
+    def do_CONNECT(self) -> None:  # noqa: N802
+        valid = (self.path == "/v1/tx/stream" and
+                 self.headers.get("X-Flex1500-Control-Lease") == "31337" and
+                 self.headers.get("X-Flex1500-TX-Lease") == "4242")
+        if not valid:
+            self.reply(410, b'{"error":"tx_stale"}\n')
+            return
+        self.send_response(200, "Connection Established")
+        self.send_header("Content-Type", "application/octet-stream")
+        self.end_headers()
+        self.connection.settimeout(0.1)
+        while not Handler.tx_stream_stop.is_set():
+            try:
+                data = self.connection.recv(8192)
+            except socket.timeout:
+                continue
+            if not data:
+                break
+            Handler.tx_stream_bytes += len(data)
+
+
+Handler.tx_stream_stop = threading.Event()
 
 
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -258,13 +289,14 @@ def main() -> int:
             Handler.releases != 1 or Handler.iq_requests < 1 or
             Handler.frequency_sets != 3 or Handler.mode_sets != 3 or
             Handler.bandwidth_sets != 2 or Handler.tx_sessions != 1 or
-            Handler.tx_audio_chunks < 1 or Handler.tx_starts != 1 or
+            Handler.tx_stream_bytes < 8192 or
+            Handler.tx_start_attempts != 2 or Handler.tx_starts != 1 or
             Handler.tx_stops != 1 or Handler.tx_releases != 1):
         print("unexpected ownership lifecycle:", Handler.acquired,
               Handler.keepalives, Handler.releases, Handler.iq_requests,
               Handler.frequency_sets, Handler.mode_sets,
               Handler.bandwidth_sets, Handler.tx_sessions,
-              Handler.tx_audio_chunks, Handler.tx_starts, Handler.tx_stops,
+              Handler.tx_stream_bytes, Handler.tx_starts, Handler.tx_stops,
               Handler.tx_releases,
               file=sys.stderr)
         return 1

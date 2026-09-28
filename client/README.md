@@ -76,11 +76,11 @@ The PipeWire source exists only while the client is running and appears in
 applications. The client publishes a `FLEX-1500 TX` PipeWire sink and captures
 its 48 kHz mono audio into a bounded 4,800-frame (100 ms) local buffer. Hamlib
 PTT uses the daemon's existing leased audio session, 4,096-frame prebuffer,
-watchdog, maximum-key timer, and stop/release cleanup. This path is available
-only when the daemon was explicitly started in transmit mode and remains
-experimental pending live dummy-load validation. The current program does not
-yet provide gain or squelch through rig control or an adjustable local DSP
-filter.
+persistent PCM stream with bounded 48 kHz pacing, watchdog, maximum-key timer,
+and stop/release cleanup. This path is available only when the daemon was
+explicitly started in transmit mode and remains experimental pending live
+dummy-load validation. The current program does not yet provide gain or
+squelch through rig control or an adjustable local DSP filter.
 
 Future development is described in the
 [companion bridge design](../docs/COMPANION_CLIENT_DESIGN.md). Planned stages

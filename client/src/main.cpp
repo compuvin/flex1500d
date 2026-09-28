@@ -6,6 +6,7 @@
 #include "flex1500/client/pipewire_source.hpp"
 #include "flex1500/client/pipewire_sink.hpp"
 #include "flex1500/client/rig_control.hpp"
+#include "flex1500/client/tx_stream.hpp"
 extern "C" {
 #include "flex1500/dsp.h"
 }
@@ -34,6 +35,7 @@ namespace {
 std::atomic_bool stop_requested{false};
 constexpr float pipewire_receive_gain = 0.1f;
 constexpr std::uint64_t default_frequency_hz = 28475000;
+constexpr std::uint64_t tx_pacing_lead_frames = 4096;
 
 struct ClientState {
     std::uint64_t frequency_hz = default_frequency_hz;
@@ -193,6 +195,7 @@ public:
                   flex1500::client::AudioRing &transmit_audio,
                   ClientState restored_state)
         : host_(std::move(host)), client_(host_, port),
+          tx_stream_(host_, port),
           mode_(std::move(restored_state.mode)),
           frequency_hz_(restored_state.frequency_hz),
           transmit_audio_(transmit_audio)
@@ -347,6 +350,7 @@ public:
                 "PUT", "/v1/tx/ptt/stop", headers);
             const auto released = client_.request(
                 "DELETE", "/v1/tx/sessions/current", headers);
+            tx_stream_.close();
             tx_keyed_ = false;
             tx_lease_.reset();
             if (stopped.status < 200 || stopped.status >= 300)
@@ -380,16 +384,27 @@ public:
             return false;
         }
         std::string silence(4096 * sizeof(std::int16_t), '\0');
-        const auto prebuffer = client_.request(
-            "POST", "/v1/tx/audio", tx_headers(), silence);
-        if (prebuffer.status < 200 || prebuffer.status >= 300) {
-            std::cerr << "[tx] prebuffer upload failed: HTTP "
-                      << prebuffer.status << ": " << prebuffer.body;
+        try {
+            tx_stream_.connect(*lease_, *tx_lease_);
+            tx_stream_.send_samples(silence.data(), silence.size());
+        } catch (const std::exception &error) {
+            std::cerr << "[tx] persistent stream setup failed: "
+                      << error.what() << '\n';
             release_tx_locked();
             return false;
         }
-        const auto started = client_.request(
-            "PUT", "/v1/tx/ptt/start", tx_headers());
+        flex1500::client::HttpResponse started;
+        const auto readiness_deadline = std::chrono::steady_clock::now() +
+                                        std::chrono::seconds(2);
+        do {
+            started = client_.request(
+                "PUT", "/v1/tx/ptt/start", tx_headers());
+            if (started.status != 409 ||
+                started.body.find("\"error\":\"tx_not_ready\"") ==
+                    std::string::npos)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (std::chrono::steady_clock::now() < readiness_deadline);
         if (started.status < 200 || started.status >= 300) {
             std::cerr << "[tx] PTT start failed: HTTP " << started.status
                       << ": " << started.body;
@@ -466,6 +481,7 @@ private:
             std::cerr << "[tx] session cleanup failed: " << error.what()
                       << '\n';
         }
+        tx_stream_.close();
         tx_keyed_ = false;
         tx_lease_.reset();
     }
@@ -493,6 +509,8 @@ private:
     {
         std::vector<float> input(4800);
         auto last_keepalive = std::chrono::steady_clock::now();
+        const auto pace_epoch = std::chrono::steady_clock::now();
+        std::uint64_t paced_frames = 0;
         while (!tx_stop_.load()) {
             const auto now = std::chrono::steady_clock::now();
             if (now - last_keepalive >= std::chrono::seconds(5)) {
@@ -512,8 +530,22 @@ private:
                     return;
                 }
             }
+            const auto pace_now = std::chrono::steady_clock::now();
+            const auto elapsed_us = std::chrono::duration_cast<
+                std::chrono::microseconds>(pace_now - pace_epoch).count();
+            const std::uint64_t elapsed_frames = elapsed_us > 0
+                ? static_cast<std::uint64_t>(elapsed_us) * 48000 / 1000000
+                : 0;
+            const std::uint64_t budget = elapsed_frames +
+                                         tx_pacing_lead_frames;
+            if (budget <= paced_frames) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            const std::size_t permitted = static_cast<std::size_t>(
+                std::min<std::uint64_t>(input.size(), budget - paced_frames));
             const std::size_t count = transmit_audio_.pop(
-                input.data(), input.size());
+                input.data(), permitted);
             if (count == 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
@@ -528,17 +560,11 @@ private:
                     (static_cast<std::uint16_t>(output) >> 8) & 0xff);
             }
             try {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (!tx_lease_) return;
-                const auto uploaded = client_.request(
-                    "POST", "/v1/tx/audio", tx_headers(), pcm);
-                if (uploaded.status < 200 || uploaded.status >= 300) {
-                    fail_tx_locked("audio upload", uploaded);
-                    return;
-                }
+                tx_stream_.send_samples(pcm.data(), pcm.size());
+                paced_frames += count;
             } catch (const std::exception &error) {
                 std::lock_guard<std::mutex> lock(mutex_);
-                fail_tx_locked("audio upload", error);
+                fail_tx_locked("persistent audio stream", error);
                 return;
             }
         }
@@ -576,6 +602,7 @@ private:
 
     std::string host_;
     flex1500::client::HttpClient client_;
+    flex1500::client::TxStream tx_stream_;
     mutable std::mutex mutex_;
     std::optional<std::uint64_t> lease_;
     std::optional<std::uint64_t> tx_lease_;

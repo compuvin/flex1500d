@@ -26,8 +26,7 @@ enum {
     INITIALIZE_INDEX = 3,
     TUNE_TRANSFER_COUNT = 8,
     TUNE_PACKETS_PER_TRANSFER = 50,
-    TUNE_TRANSFER_BYTES =
-        TUNE_PACKETS_PER_TRANSFER * FLEX1500_SAMPLE_PACKET_SIZE,
+    AUDIO_PACKETS_PER_TRANSFER = 10,
     TUNE_TRANSITION_MS = 200,
     TUNE_PRE_ROLL_MS = 250,
 };
@@ -659,10 +658,10 @@ static int production_send_command(void *context, const uint8_t *packet,
     return result;
 }
 
-static void fill_tune_tone(uint8_t *buffer)
+static void fill_tune_tone(uint8_t *buffer, size_t bytes)
 {
     const double pi = 3.14159265358979323846;
-    const size_t frames = TUNE_TRANSFER_BYTES / 4;
+    const size_t frames = bytes / 4;
     for (size_t frame = 0; frame < frames; ++frame) {
         double phase = 2.0 * pi * TUNE_TONE_HZ * (double)frame /
                        TUNE_SAMPLE_RATE_HZ;
@@ -722,27 +721,31 @@ static void release_tune_stream(flex1500_usb_rx *receiver)
 
 static int start_tune_stream(flex1500_usb_rx *receiver, bool microphone)
 {
+    const int packets_per_transfer = microphone
+        ? AUDIO_PACKETS_PER_TRANSFER : TUNE_PACKETS_PER_TRANSFER;
+    const size_t transfer_bytes = (size_t)packets_per_transfer *
+                                  FLEX1500_SAMPLE_PACKET_SIZE;
     receiver->tune_streaming = true;
     receiver->microphone_streaming = microphone;
     receiver->tx_accepting_audio = microphone;
     for (unsigned int index = 0; index < TUNE_TRANSFER_COUNT; ++index) {
         tune_slot *slot = &receiver->tune_slots[index];
         slot->receiver = receiver;
-        slot->buffer = malloc(TUNE_TRANSFER_BYTES);
-        slot->transfer = libusb_alloc_transfer(TUNE_PACKETS_PER_TRANSFER);
+        slot->buffer = malloc(transfer_bytes);
+        slot->transfer = libusb_alloc_transfer(packets_per_transfer);
         if (slot->buffer == NULL || slot->transfer == NULL) {
             set_error(receiver, "allocate Tune endpoint-0x01 transfer failed");
             release_tune_stream(receiver);
             return LIBUSB_ERROR_NO_MEM;
         }
         if (microphone) {
-            memset(slot->buffer, 0, TUNE_TRANSFER_BYTES);
+            memset(slot->buffer, 0, transfer_bytes);
         } else {
-            fill_tune_tone(slot->buffer);
+            fill_tune_tone(slot->buffer, transfer_bytes);
         }
         libusb_fill_iso_transfer(
             slot->transfer, receiver->handle, FLEX1500_EP_SAMPLE_OUT,
-            slot->buffer, TUNE_TRANSFER_BYTES, TUNE_PACKETS_PER_TRANSFER,
+            slot->buffer, (int)transfer_bytes, packets_per_transfer,
             tune_complete, slot, 0);
         libusb_set_iso_packet_lengths(slot->transfer,
                                       FLEX1500_SAMPLE_PACKET_SIZE);

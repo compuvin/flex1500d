@@ -178,7 +178,7 @@ def main() -> int:
         process = subprocess.Popen(
             [sys.argv[1], "--host", "127.0.0.1", "--port",
              str(server.server_address[1]), "--rigctl-port",
-             str(rigctl_port)],
+             str(rigctl_port), "--no-pipewire"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=environment,
         )

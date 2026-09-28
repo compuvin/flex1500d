@@ -127,10 +127,13 @@ void request_stop(int)
 void usage(const char *program)
 {
     std::cout << "Usage: " << program
-              << " [--host HOST] [--port PORT] [--rigctl-port PORT]\n"
+              << " [--host HOST] [--port PORT] [--rigctl-port PORT]"
+                 " [--no-pipewire]\n"
               << "       " << program << " --version\n\n"
               << "Connects to flex1500d, acquires station control when "
-                 "available, and renews it until stopped.\n";
+                 "available, and renews it until stopped.\n"
+              << "--no-pipewire is intended for headless integration tests; "
+                 "it disables local RX and TX audio devices.\n";
 }
 
 std::uint16_t parse_port(const std::string &text)
@@ -633,6 +636,7 @@ int main(int argc, char **argv)
     std::string host = "127.0.0.1";
     std::uint16_t port = 15000;
     std::uint16_t rigctl_port = 4532;
+    bool pipewire_enabled = true;
 
     try {
         for (int index = 1; index < argc; ++index) {
@@ -658,6 +662,10 @@ int main(int argc, char **argv)
                 rigctl_port = parse_port(argv[++index]);
                 continue;
             }
+            if (argument == "--no-pipewire") {
+                pipewire_enabled = false;
+                continue;
+            }
             throw std::runtime_error("unknown or incomplete option: " +
                                      argument);
         }
@@ -668,13 +676,19 @@ int main(int argc, char **argv)
         flex1500::client::AudioRing transmit_audio(4800);
         BridgeSession session(host, port, transmit_audio, load_state());
         session.connect();
-        flex1500::client::PipeWireSource pipewire(audio);
-        flex1500::client::PipeWireSink pipewire_tx(transmit_audio);
-        pipewire.start();
-        std::cout << "[audio] PipeWire source ready: FLEX-1500 RX\n";
-        pipewire_tx.start();
-        std::cout << "[audio] PipeWire sink ready: FLEX-1500 TX "
-                     "(PTT remains disabled)\n";
+        std::optional<flex1500::client::PipeWireSource> pipewire;
+        std::optional<flex1500::client::PipeWireSink> pipewire_tx;
+        if (pipewire_enabled) {
+            pipewire.emplace(audio);
+            pipewire_tx.emplace(transmit_audio);
+            pipewire->start();
+            std::cout << "[audio] PipeWire source ready: FLEX-1500 RX\n";
+            pipewire_tx->start();
+            std::cout << "[audio] PipeWire sink ready: FLEX-1500 TX "
+                         "(PTT remains disabled)\n";
+        } else {
+            std::cout << "[audio] PipeWire disabled for headless test\n";
+        }
 
         flex1500_dsp dsp{};
         const flex1500_dsp_config dsp_config = {
@@ -754,7 +768,8 @@ int main(int argc, char **argv)
         iq.close();
         receive_thread.join();
         rig.stop();
-        pipewire.stop();
+        if (pipewire) pipewire->stop();
+        if (pipewire_tx) pipewire_tx->stop();
         std::cout << "[audio] RX stopped; dropped=" << audio.dropped()
                   << " underrun=" << audio.underruns() << '\n';
         save_state(session.client_state());

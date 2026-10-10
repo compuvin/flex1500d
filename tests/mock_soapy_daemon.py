@@ -77,8 +77,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_body(200, b'{"rx_bandwidth_hz":2400}\n')
         elif self.path == "/v1/radio/squelch/-60":
             self.send_body(200, b'{"rx_squelch_db":-60}\n')
-        elif self.path == "/v1/radio/tx-drive/75":
-            self.send_body(200, b'{"tx_drive_percent":75}\n')
+        elif self.path == "/v1/radio/tx-drive/50":
+            self.send_body(200, b'{"tx_drive_percent":50}\n')
         elif self.path == "/v1/tx/ptt/start":
             if not self.tx_headers_valid():
                 self.send_body(409, b'{"error":"station_owned"}\n')

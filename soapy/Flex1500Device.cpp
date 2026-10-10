@@ -48,6 +48,8 @@ constexpr std::size_t FRAME_HEADER_SIZE = 20;
 constexpr std::size_t STREAM_MTU = 1024;
 constexpr std::size_t TX_PREBUFFER_FRAMES = 4096;
 constexpr std::size_t TX_PACING_LEAD_FRAMES = 4096;
+constexpr double MIN_TX_GAIN_DB = -40.0;
+constexpr double MAX_TX_GAIN_DB = 0.0;
 
 const SoapySDR::RangeList TX_FREQUENCY_RANGES = {
     {1824000.0, 1976000.0}, {3524000.0, 3976000.0},
@@ -63,6 +65,17 @@ bool txFrequencyAllowed(double frequency)
         [frequency](const SoapySDR::Range &range) {
             return frequency >= range.minimum() && frequency <= range.maximum();
         });
+}
+
+int txDriveFromGain(double gainDb)
+{
+    const double percent = 100.0 * std::pow(10.0, gainDb / 20.0);
+    return std::clamp(static_cast<int>(std::lround(percent)), 1, 100);
+}
+
+double txGainFromDrive(double drivePercent)
+{
+    return 20.0 * std::log10(drivePercent / 100.0);
 }
 
 class Socket {
@@ -636,9 +649,11 @@ public:
     {
         checkChannel(direction, channel);
         if (direction == SOAPY_SDR_TX) {
-            if (!std::isfinite(gain) || gain < 1.0 || gain > 100.0)
-                throw std::runtime_error("flex1500: TX drive must be 1..100 percent");
-            const int value = static_cast<int>(std::lround(gain));
+            if (!std::isfinite(gain) || gain < MIN_TX_GAIN_DB ||
+                gain > MAX_TX_GAIN_DB)
+                throw std::runtime_error(
+                    "flex1500: TX gain must be -40..0 dB");
+            const int value = txDriveFromGain(gain);
             const HttpResponse response = controlRequest("PUT",
                 "/v1/radio/tx-drive/" + std::to_string(value));
             if (response.status != 200)
@@ -657,16 +672,48 @@ public:
             throw std::runtime_error("flex1500: daemon rejected RX gain");
         gain_ = rounded;
     }
+    void setGain(int direction, size_t channel, const std::string &name,
+                 double gain) override
+    {
+        checkChannel(direction, channel);
+        const std::string expected =
+            direction == SOAPY_SDR_RX ? "RX" : "TX";
+        if (name != expected)
+            throw std::runtime_error("flex1500: unknown gain control " + name);
+        setGain(direction, channel, gain);
+    }
     double getGain(int direction, size_t channel) const override
     {
         checkChannel(direction, channel);
-        return direction == SOAPY_SDR_RX ? gain_ : txDrive_;
+        return direction == SOAPY_SDR_RX ? gain_
+                                         : txGainFromDrive(txDrive_);
+    }
+    double getGain(int direction, size_t channel,
+                   const std::string &name) const override
+    {
+        checkChannel(direction, channel);
+        const std::string expected =
+            direction == SOAPY_SDR_RX ? "RX" : "TX";
+        if (name != expected)
+            throw std::runtime_error("flex1500: unknown gain control " + name);
+        return getGain(direction, channel);
     }
     SoapySDR::Range getGainRange(int direction, size_t channel) const override
     {
         checkChannel(direction, channel);
         return direction == SOAPY_SDR_RX ? SoapySDR::Range(-10.0, 30.0, 10.0)
-                                         : SoapySDR::Range(1.0, 100.0, 1.0);
+                                         : SoapySDR::Range(MIN_TX_GAIN_DB,
+                                                           MAX_TX_GAIN_DB);
+    }
+    SoapySDR::Range getGainRange(int direction, size_t channel,
+                                 const std::string &name) const override
+    {
+        checkChannel(direction, channel);
+        const std::string expected =
+            direction == SOAPY_SDR_RX ? "RX" : "TX";
+        if (name != expected)
+            throw std::runtime_error("flex1500: unknown gain control " + name);
+        return getGainRange(direction, channel);
     }
     void setBandwidth(int direction, size_t channel, double bandwidth) override
     {

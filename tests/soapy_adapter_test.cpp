@@ -60,10 +60,14 @@ int main(int argc, char **argv)
     CHECK(device->getFrequency(SOAPY_SDR_RX, 0) == 7100000.0);
     CHECK(device->listGains(SOAPY_SDR_RX, 0) == std::vector<std::string>{"RX"});
     CHECK(device->getGain(SOAPY_SDR_RX, 0) == 20.0);
-    device->setGain(SOAPY_SDR_RX, 0, 10.0);
+    CHECK(device->getGain(SOAPY_SDR_RX, 0, "RX") == 20.0);
+    device->setGain(SOAPY_SDR_RX, 0, "RX", 10.0);
     CHECK(device->getGain(SOAPY_SDR_RX, 0) == 10.0);
+    CHECK(device->getGain(SOAPY_SDR_RX, 0, "RX") == 10.0);
     CHECK(device->getGainRange(SOAPY_SDR_RX, 0).minimum() == -10.0);
     CHECK(device->getGainRange(SOAPY_SDR_RX, 0).maximum() == 30.0);
+    CHECK(device->getGainRange(SOAPY_SDR_RX, 0, "RX").minimum() == -10.0);
+    CHECK(device->getGainRange(SOAPY_SDR_RX, 0, "RX").maximum() == 30.0);
     device->setBandwidth(SOAPY_SDR_RX, 0, 2400.0);
     CHECK(device->getBandwidth(SOAPY_SDR_RX, 0) == 2400.0);
     device->writeSetting("squelch_db", "-60");
@@ -107,6 +111,10 @@ int main(int argc, char **argv)
     CHECK(device->getSampleRate(SOAPY_SDR_TX, 0) == 48000.0);
     CHECK(device->getBandwidth(SOAPY_SDR_TX, 0) == 48000.0);
     CHECK(device->getFrequencyRange(SOAPY_SDR_TX, 0).size() == 9);
+    CHECK(device->listGains(SOAPY_SDR_TX, 0) == std::vector<std::string>{"TX"});
+    CHECK(device->getGainRange(SOAPY_SDR_TX, 0, "TX").minimum() == -40.0);
+    CHECK(device->getGainRange(SOAPY_SDR_TX, 0, "TX").maximum() == 0.0);
+    CHECK(device->getGainRange(SOAPY_SDR_TX, 0, "TX").step() == 0.0);
     double fullScale = 0.0;
     CHECK(device->getNativeStreamFormat(SOAPY_SDR_TX, 0, fullScale) ==
           SOAPY_SDR_CS16);
@@ -118,8 +126,11 @@ int main(int argc, char **argv)
     }
     CHECK(rejected);
     device->setFrequency(SOAPY_SDR_TX, 0, 7100000.0);
-    device->setGain(SOAPY_SDR_TX, 0, 75.0);
-    CHECK(device->getGain(SOAPY_SDR_TX, 0) == 75.0);
+    constexpr double halfAmplitudeDb = -6.020599913279624;
+    device->setGain(SOAPY_SDR_TX, 0, "TX", halfAmplitudeDb);
+    CHECK(std::abs(device->getGain(SOAPY_SDR_TX, 0) - halfAmplitudeDb) < 1e-9);
+    CHECK(std::abs(device->getGain(SOAPY_SDR_TX, 0, "TX") -
+                   halfAmplitudeDb) < 1e-9);
     stream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CF32);
     CHECK(stream != nullptr);
     CHECK(device->activateStream(stream) == 0);

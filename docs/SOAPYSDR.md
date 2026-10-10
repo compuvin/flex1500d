@@ -62,8 +62,12 @@ watchdog, maximum-key timer, guaranteed-unkey cleanup, drive limiter, and
 ownership rules.
 
 Soapy I/Q is conjugated at the adapter boundary, matching the receive-side
-orientation correction. TX drive is exposed through Soapy's TX gain control as
-an integer percentage from 1 through 100. Raw-I/Q center frequencies are
+orientation correction. TX gain follows SoapySDR's dB convention and is
+advertised from -40 through 0 dB. The adapter converts it to the daemon's
+integer drive percentage using `round(100 * 10^(gain_db / 20))`; 0 dB maps to
+100% drive, about -6.02 dB to 50%, -12.04 dB to 25%, and -20 dB to 10%.
+The percentage controls I/Q amplitude and is not a calibrated RF-power scale.
+Raw-I/Q center frequencies are
 advertised only where the complete plus/minus 24 kHz span fits within a
 configured amateur allocation; the daemon independently rechecks that rule at
 PTT start. Soapy timed bursts and `END_BURST` flags are not yet supported;

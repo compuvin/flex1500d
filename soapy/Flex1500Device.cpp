@@ -316,7 +316,7 @@ public:
         txDrive_ = jsonNumber(radio.body, "tx_drive_percent", 100.0);
         bandwidth_ = jsonNumber(radio.body, "rx_bandwidth_hz", 6000.0);
         squelch_ = jsonNumber(radio.body, "rx_squelch_db", -120.0);
-        if (daemonTransmitEnabled_) {
+        if (tuningEnabled_) {
             stationKey_ = host_ + ":" + std::to_string(port_);
             std::lock_guard<std::mutex> lock(sharedStationMutex);
             auto existing = sharedStationLeases.find(stationKey_);
@@ -384,7 +384,8 @@ public:
     size_t getNumChannels(int direction) const override
     {
         return direction == SOAPY_SDR_RX ||
-            (direction == SOAPY_SDR_TX && stationOwner_) ? 1 : 0;
+            (direction == SOAPY_SDR_TX && daemonTransmitEnabled_ &&
+             stationOwner_) ? 1 : 0;
     }
     bool getFullDuplex(int, size_t) const override { return false; }
     std::vector<std::string> getStreamFormats(int direction, size_t channel) const override

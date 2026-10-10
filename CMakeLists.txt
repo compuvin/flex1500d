@@ -452,6 +452,13 @@ if(BUILD_TESTING)
                 $<TARGET_FILE:soapy-adapter-test>
                 $<TARGET_FILE_DIR:flex1500Support>
         )
+        add_test(NAME soapy-adapter-receive-only
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/mock_soapy_daemon.py
+                $<TARGET_FILE:soapy-adapter-test>
+                $<TARGET_FILE_DIR:flex1500Support>
+                receive-only
+        )
     endif()
     add_executable(protocol-policy-test tests/protocol_policy_test.c)
     target_link_libraries(protocol-policy-test PRIVATE flex1500_protocol)

@@ -20,7 +20,7 @@ int main(int argc, char **argv)
     const std::string port = argv[1];
     const SoapySDR::Kwargs args{{"driver", "flex1500"},
                                 {"host", "127.0.0.1"}, {"port", port}};
-    if (argc == 3) {
+    if (argc == 3 && std::string(argv[2]) == "listener") {
         SoapySDR::Device *listener = SoapySDR::Device::make(args);
         CHECK(listener != nullptr);
         CHECK(listener->getNumChannels(SOAPY_SDR_RX) == 1);
@@ -36,6 +36,19 @@ int main(int argc, char **argv)
         }
         CHECK(rejected);
         SoapySDR::Device::unmake(listener);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 3 && std::string(argv[2]) == "receive-only") {
+        SoapySDR::Device *receiver = SoapySDR::Device::make(args);
+        CHECK(receiver != nullptr);
+        CHECK(receiver->getNumChannels(SOAPY_SDR_RX) == 1);
+        CHECK(receiver->getNumChannels(SOAPY_SDR_TX) == 0);
+        CHECK(receiver->getHardwareInfo().at("daemon_transmit_enabled") ==
+              "false");
+        CHECK(receiver->getHardwareInfo().at("station_owner") == "true");
+        receiver->setFrequency(SOAPY_SDR_RX, 0, 7100000.0);
+        CHECK(receiver->getFrequency(SOAPY_SDR_RX, 0) == 7100000.0);
+        SoapySDR::Device::unmake(receiver);
         return EXIT_SUCCESS;
     }
 

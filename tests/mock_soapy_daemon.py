@@ -26,6 +26,17 @@ RADIO = b'''{
   ,"rx_squelch_db": -120
   ,"tx_drive_percent": 100
 }\n'''
+RECEIVE_ONLY_RADIO = b'''{
+  "model": "FLEX-1500",
+  "receive_only": true,
+  "transmit_enabled": false,
+  "rx_tuning_enabled": true,
+  "frequency_hz": null,
+  "rx_gain_db": 20,
+  "rx_bandwidth_hz": 6000,
+  "rx_squelch_db": -120,
+  "tx_drive_percent": 100
+}\n'''
 STATUS = b'{"service":"flex1500d","api_version":1}\n'
 
 
@@ -40,6 +51,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     owner_held = False
     owner_mode_aware_false = False
     owner_lock = threading.Lock()
+    radio = RADIO
 
     def tx_headers_valid(self) -> bool:
         return (self.headers.get("X-Flex1500-Control-Lease") == "31337" and
@@ -56,7 +68,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         if self.path == "/v1/radio":
-            self.send_body(200, RADIO)
+            self.send_body(200, Handler.radio)
         elif self.path == "/v1/status":
             self.send_body(200, STATUS)
         elif self.path == "/v1/stream/iq":
@@ -172,8 +184,9 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: mock_soapy_daemon.py TEST_EXECUTABLE MODULE_DIR",
+    if len(sys.argv) not in (3, 4):
+        print("usage: mock_soapy_daemon.py TEST_EXECUTABLE MODULE_DIR "
+              "[receive-only]",
               file=sys.stderr)
         return 2
     with Server(("127.0.0.1", 0), Handler) as server:
@@ -184,6 +197,18 @@ def main() -> int:
         environment["SOAPY_SDR_PLUGIN_PATH"] = str(module_dir)
         # Do not let a previously installed module mask the build under test.
         environment["SOAPY_SDR_ROOT"] = str(module_dir / "isolated-root")
+        if len(sys.argv) == 4:
+            if sys.argv[3] != "receive-only":
+                print("unknown test mode", file=sys.stderr)
+                return 2
+            Handler.radio = RECEIVE_ONLY_RADIO
+            result = subprocess.run(
+                [sys.argv[1], str(server.server_address[1]), "receive-only"],
+                env=environment, check=False
+            )
+            server.shutdown()
+            thread.join()
+            return result.returncode
         result = subprocess.run(
             [sys.argv[1], str(server.server_address[1])], env=environment,
             check=False

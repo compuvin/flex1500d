@@ -917,13 +917,15 @@ static int serve_live_rx_at(const char *bind_address, const char *port_text,
     flex1500_station_owner station_owner;
     flex1500_station_owner_init(&station_owner);
     tx_context.network_tx = &network_tx;
+    if (rx_tuning_enabled) {
+        api.station_owner = &station_owner;
+        api.next_station_lease = initial_tune_lease();
+    }
     if (transmit_enabled) {
         api.tune_control = &tune_control;
         api.next_tune_lease = initial_tune_lease();
         api.next_tx_lease = initial_tune_lease();
         api.network_tx = &network_tx;
-        api.station_owner = &station_owner;
-        api.next_station_lease = initial_tune_lease();
     }
     api.radio_context = receiver;
     api.tune_rx = api_tune_rx;

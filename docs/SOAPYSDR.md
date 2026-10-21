@@ -276,6 +276,16 @@ This validates the adapter-to-daemon Soapy TX lifecycle with SDR Oxide. It does
 not yet establish compatibility with other SoapySDR transmit applications,
 timed bursts, or `END_BURST` operation.
 
+## First SoapySDR USB voice QSO
+
+Date: 2026-10-17
+
+KB1JDX completed the project's first USB voice QSO through the SoapySDR path
+with K8PTP in Ohio on 20 meters. The client was the ChrissySDR Android app,
+connected through SoapySDR to `flex1500d` and the FLEX-1500. This confirms a
+completed two-way amateur-radio contact using the project's raw-I/Q Soapy TX
+and RX integration, beyond the earlier dummy-load and monitor-receiver tests.
+
 ## Installed-module correction and latency validation
 
 Date: 2026-09-14

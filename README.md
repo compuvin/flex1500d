@@ -205,9 +205,9 @@ the package matching the Debian architecture reported by
 `dpkg --print-architecture`, together with its declared dependencies, using:
 
 ```sh
-sudo apt install ./flex1500d_0.2.3_amd64.deb
+sudo apt install ./flex1500d_0.2.4_amd64.deb
 # or, on ARM64:
-sudo apt install ./flex1500d_0.2.3_arm64.deb
+sudo apt install ./flex1500d_0.2.4_arm64.deb
 ```
 
 The package installs `flex1500d`, the SoapySDR module, the udev access rule, a
@@ -222,9 +222,9 @@ The optional workstation-side thin client is distributed separately so radio
 hosts do not need PipeWire or Hamlib compatibility components:
 
 ```sh
-sudo apt install ./flex1500-client_0.2.3_amd64.deb
+sudo apt install ./flex1500-client_0.2.4_amd64.deb
 # or, on ARM64:
-sudo apt install ./flex1500-client_0.2.3_arm64.deb
+sudo apt install ./flex1500-client_0.2.4_arm64.deb
 ```
 
 This package installs `flex1500-client` and its documentation only. It does not

@@ -1,5 +1,43 @@
 # Release notes
 
+## v0.2.4 — SoapySDR interoperability and RX-ownership maintenance release
+
+This live-tested beta maintenance release corrects SoapySDR gain semantics and
+station ownership in receive-only RX-tuning mode.
+
+### SoapySDR improvements
+
+- TX gain now follows SoapySDR's dB convention, advertised from -40 through
+  0 dB and mapped internally to the daemon's 1–100% amplitude-drive setting.
+- Named RX and TX gain controls now report their actual ranges instead of
+  appearing as 0–0 dB in capability scanners.
+- A primary SoapySDR client can now acquire station control when the daemon is
+  running in RX-tuning mode, establish the hardware center frequency, and
+  receive normally without enabling transmit.
+- Secondary clients remain receive-only and restricted to the primary
+  station's 48 kHz IQ window.
+- The daemon now provides station-control leasing whenever RX tuning is
+  enabled, while TX routes and channels remain unavailable unless transmit
+  mode was explicitly selected.
+
+### Live validation
+
+On October 17, 2026, KB1JDX completed the project's first SoapySDR USB voice
+QSO with K8PTP in Ohio on 20 meters using the ChrissySDR Android application.
+
+### Packages
+
+Separate `flex1500d` and optional `flex1500-client` Debian packages are
+provided for `amd64` and `arm64`.
+
+### Important limitations
+
+- General TX remains explicitly enabled and under active development.
+- The API remains unauthenticated and unencrypted.
+- Operators remain responsible for legal and safe operation.
+- The thin client remains a compatibility bridge rather than a complete SDR
+  application.
+
 ## v0.2.3 — thin-client digital-mode and TX-streaming release
 
 This live-tested beta release adds the optional `flex1500-client` thin client,

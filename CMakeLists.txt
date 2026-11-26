@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(flex1500d VERSION 0.2.3 LANGUAGES C CXX)
+project(flex1500d VERSION 0.2.4 LANGUAGES C CXX)
 
 execute_process(
     COMMAND git rev-parse --short=8 HEAD

@@ -93,7 +93,7 @@ normal build and `flex1500d` Debian package do not include it. Releases may
 provide a separate `flex1500-client` package for the operator workstation:
 
 ```sh
-sudo apt install ./flex1500-client_0.2.4_amd64.deb
+sudo apt install ./flex1500-client_0.2.5_amd64.deb
 # or, on ARM64:
-sudo apt install ./flex1500-client_0.2.4_arm64.deb
+sudo apt install ./flex1500-client_0.2.5_arm64.deb
 ```

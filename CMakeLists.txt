@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(flex1500d VERSION 0.2.4 LANGUAGES C CXX)
+project(flex1500d VERSION 0.2.5 LANGUAGES C CXX)
 
 execute_process(
     COMMAND git rev-parse --short=8 HEAD
@@ -58,9 +58,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(FLEX1500_BUILD_SOAPYSDR)
+    set(FLEX1500_SOAPY_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}")
+    if(CMAKE_LIBRARY_ARCHITECTURE AND
+       CMAKE_INSTALL_LIBDIR STREQUAL "lib")
+        set(FLEX1500_SOAPY_INSTALL_LIBDIR
+            "lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+    endif()
     SOAPY_SDR_MODULE_UTIL(
         TARGET flex1500Support
         SOURCES soapy/Flex1500Device.cpp
+        DESTINATION
+            "${FLEX1500_SOAPY_INSTALL_LIBDIR}/SoapySDR/modules${SOAPY_SDR_ABI_VERSION}"
     )
     target_compile_options(flex1500Support PRIVATE
         -Wall -Wextra -Wpedantic

@@ -71,6 +71,17 @@ run_dpkg --install "$package"
 assert_file /usr/bin/flex1500d
 assert_file /usr/lib/systemd/system/flex1500d.service
 assert_file /etc/flex1500d/flex1500d.conf
+package_arch=$(dpkg-deb --field "$package" Architecture)
+case "$package_arch" in
+    amd64) multiarch=x86_64-linux-gnu ;;
+    arm64) multiarch=aarch64-linux-gnu ;;
+    *)
+        echo "unsupported package architecture: $package_arch" >&2
+        exit 1
+        ;;
+esac
+assert_file \
+    "/usr/lib/$multiarch/SoapySDR/modules0.8/libflex1500Support.so"
 grep -Fx 'mode=rx-tuning' "$root/etc/flex1500d/flex1500d.conf" >/dev/null
 test -L "$enabled_link"
 assert_log_contains 'daemon-reload'

@@ -1,5 +1,24 @@
 # Release notes
 
+## v0.2.5 — Debian SoapySDR module-path hotfix
+
+This maintenance release corrects the SoapySDR module installation path in
+the Debian packages published with v0.2.4.
+
+The v0.2.4 packages placed `libflex1500Support.so` in the generic
+`/usr/lib/SoapySDR/modules0.8` directory. Debian and Ubuntu search their
+architecture-specific SoapySDR module directories, so the driver was not
+discovered after package installation.
+
+v0.2.5 installs the driver in the appropriate multiarch directory:
+
+- `/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.8` on amd64;
+- `/usr/lib/aarch64-linux-gnu/SoapySDR/modules0.8` on ARM64.
+
+The Debian package lifecycle test now verifies the module's architecture-
+specific installation path. No radio protocol, DSP, API, or transmit behavior
+changed in this release.
+
 ## v0.2.4 — SoapySDR interoperability and RX-ownership maintenance release
 
 This live-tested beta maintenance release corrects SoapySDR gain semantics and
